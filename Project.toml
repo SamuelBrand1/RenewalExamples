@@ -1,0 +1,16 @@
+name = "RenewalExamples"
+uuid = "3f9e54df-3fe4-477a-805e-d9e2561d0710"
+version = "0.1.0"
+authors = ["Samuel Brand <48288458+SamuelBrand1@users.noreply.github.com>"]
+
+[deps]
+CensoredDistributions = "b2eeebe4-5992-4301-9193-7ebc9f62c855"
+Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
+Enzyme = "7da242da-08ed-463a-9acd-ee780be4f1d9"
+Mooncake = "da2b9cff-9c12-43a0-ae48-6db2b0edb7d6"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+ReverseDiff = "37e2e3b7-166d-5795-8a7a-e32c996b4267"
+StatsPlots = "f3b207a7-027a-5e70-b257-86293d7955fd"
+Turing = "fce5fe82-541a-59a6-adf8-730c64b5f9a0"
+
+
