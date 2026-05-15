@@ -1,0 +1,32 @@
+[project]
+name = "smc-renewal"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Samuel Brand", email = "48288458+SamuelBrand1@users.noreply.github.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "blackjax>=1.5",
+    "cuthbert>=0.0.10",
+    "jax>=0.10.0",
+    "matplotlib>=3.10.9",
+    "numpyro>=0.21.0",
+    "pfjax",
+    "properscoring>=0.1",
+    "pyrenew",
+]
+
+[build-system]
+requires = ["uv_build>=0.8.0,<0.9"]
+build-backend = "uv_build"
+
+[tool.uv.sources]
+pyrenew = { git = "https://github.com/CDCgov/PyRenew.git" }
+pfjax = { git = "https://github.com/mlysy/pfjax.git" }
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
