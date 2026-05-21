@@ -58,6 +58,17 @@ class ModelConfig:
     # Liu-West.  Default mean log μ = 0 ⇒ μ ≈ 1.0 case/day; wide-ish sd.
     init_log_mu_mean: float = 0.0
     init_log_mu_sd: float = 0.5
+    # Model E (discrete + GDM observation delay) — three new Liu-West params
+    # (b_0, b_1, log_M) parameterising the per-stage Beta(α_s, β_s) of the
+    # cohort-partition delay model.  α_s = p_s · M, β_s = (1 − p_s) · M,
+    # Φ⁻¹(p_s) = b_0 + b_1 · s.  Plus a fixed ascertainment α.
+    ascertainment_alpha: float = 0.9
+    init_b0_mean: float = 0.0
+    init_b0_sd: float = 0.5
+    init_b1_mean: float = 0.3
+    init_b1_sd: float = 0.3
+    init_log_M_mean: float = 3.0
+    init_log_M_sd: float = 0.5
 
     @property
     def Tg(self) -> int:

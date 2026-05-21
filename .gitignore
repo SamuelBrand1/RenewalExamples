@@ -1,3 +1,5 @@
 .vscode/settings.json
 *_pycache__/
-*/.DS_Store
+*.DS_Store
+*/*/.DS_Store
+smc-jax/examples/.DS_Store

@@ -41,13 +41,15 @@ of `log Rt` (and `log F`) is represented.  All four go through the same
 shared scan loop in `pf/_runner_core.py`; each variant supplies only its
 model class and an initial-parameter sampler.
 
-| | A (nested RW) | B (direct σ) | C (trend / integrated BM) | D (discrete + immigration) |
-| --- | --- | --- | --- | --- |
-| **What evolves** | log σ random walks; log Rt walks at rate σ | log σ is a Liu-West param (no σ in state) | Velocity v_R does a random walk; log Rt evolves as `log Rt + v_R` | Same trend dynamics as C, but `I(t)` is Poisson-sampled with an immigration rate μ |
-| **State** | log Rt, log σ_R, log F, log σ_F, log I0, I_buf | log Rt, log F, log I0, I_buf | log Rt, v_R, log F, v_F, log I0, I_buf | log Rt, v_R, log F, v_F, log I0, I_buf (integer infections) |
-| **Liu-West cloud** | (log τ_R, log τ_F, log φ) | (log σ_R, log σ_F, log φ) | (log σ_vR, log σ_vF, log φ) | (log σ_vR, log σ_vF, log μ, log φ) |
-| **Entry point** | `pf.runner.run_liu_west` | `pf.runner_sigma.run_liu_west_sigma` | `pf.runner_trend.run_liu_west_trend` | `pf.runner_discrete.run_liu_west_discrete` |
-| **Demo** | examples 01–07 | example 08 (vs A), 09 | example 10 | example 11 |
+| | A (nested RW) | B (direct σ) | C (trend / integrated BM) | D (discrete + immigration) | E (D + GDM delay + guided) |
+| --- | --- | --- | --- | --- | --- |
+| **What evolves** | log σ random walks; log Rt walks at rate σ | log σ is a Liu-West param (no σ in state) | Velocity v_R does a random walk; log Rt evolves as `log Rt + v_R` | Same trend dynamics as C, but `I(t)` is Poisson-sampled with an immigration rate μ | Same as D plus per-cohort remaining-unreported tracking; observations exactly partitioned via GDM |
+| **State** | log Rt, log σ_R, log F, log σ_F, log I0, I_buf | log Rt, log F, log I0, I_buf | log Rt, v_R, log F, v_F, log I0, I_buf | log Rt, v_R, log F, v_F, log I0, I_buf (integer infections) | log Rt, v_R, log F, v_F, log I0, **I_buf + U_buf** (per-cohort unreported) |
+| **Observation** | delay-conv + NegBin | delay-conv + NegBin | delay-conv + NegBin | delay-conv + NegBin | **GDM cohort partition** (Stoner et al) |
+| **Proposal** | bootstrap | bootstrap | bootstrap | bootstrap | **guided** (Wallenius noncentral hypergeometric) |
+| **Liu-West cloud** | (log τ_R, log τ_F, log φ) | (log σ_R, log σ_F, log φ) | (log σ_vR, log σ_vF, log φ) | (log σ_vR, log σ_vF, log μ, log φ) | (log σ_vR, log σ_vF, log μ, b_0, b_1, log_M) |
+| **Entry point** | `pf.runner.run_liu_west` | `pf.runner_sigma.run_liu_west_sigma` | `pf.runner_trend.run_liu_west_trend` | `pf.runner_discrete.run_liu_west_discrete` | `pf.runner_gdm.run_liu_west_gdm` |
+| **Demo** | examples 01–07 | example 08 (vs A), 09 | example 10 | example 11 | example 12 |
 
 Model A is the model described in detail above and is what `smc2/` targets.
 The sequential-update path (`extend_liu_west`, `rolling_origin_forecast`) is

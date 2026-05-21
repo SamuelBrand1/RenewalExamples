@@ -230,11 +230,49 @@ their own posterior, where in A/B/C they were deterministic given upstream
 state. Headline: log_Rt filter cov ~0.94, log_μ posterior visibly shifted
 from prior toward truth, log_φ sharply identified.
 
-## What's where: A / B / C / D cheat-sheet
+## 12 — Model E: outbreak analysis with GDM observation delay + guided PF proposal
 
-| Model | Latent dynamics | Liu-West parameters | Forecast median behaviour |
-|---|---|---|---|
-| **A** (`pf/model.py`)          | log Rt RW with σ_R state walked by τ        | `(log τ_R, log τ_F, log φ)`    | flat at current log Rt |
-| **B** (`pf/model_sigma.py`)    | log Rt RW with σ_R as LW param              | `(log σ_R, log σ_F, log φ)`    | flat at current log Rt |
-| **C** (`pf/model_trend.py`)    | integrated BM (log Rt + v_R)                | `(log σ_vR, log σ_vF, log φ)`  | extrapolates current v_R |
-| **D** (`pf/model_discrete.py`) | C + **Poisson I** + immigration             | `(log σ_vR, log σ_vF, log μ, log φ)` | extrapolates current v_R, Poisson scatter in I, F-feedback bounds growth |
+Short single-outbreak (T=70 days) demonstrating that **high-ascertainment
+regimes break the conditional-independence assumption** of examples 01–11's
+observation model.  When ascertainment is close to 1, observations across
+days from a single cohort are coupled through cohort-budget constraints:
+if `N` people are infected, at most `N` of them can ever be observed, and
+once individual reports on day `t` they can't be re-reported on day
+`t' > t`.  Examples 01–11's simple `μ_y(t) = Σ d_s · I[t−s]` delay
+convolution + NegBin observation can't represent this coupling.
+
+Model E replaces that with a **Generalised Dirichlet Multinomial** (Stoner
+et al) cohort partition: each cohort's eventually-observable cases get
+stick-broken across reporting stages via independent Beta-Binomials, with
+per-stage Beta means parameterised on the probit scale,
+`Φ⁻¹(p_s) = b_0 + b_1 · s`.
+
+Because the observation is now coupled with the latent partition, a
+bootstrap PF fails (almost no particle samples a partition that hits the
+observed `y_t` exactly).  We use a **guided proposal** for the cohort
+partition: a multivariate **Wallenius noncentral hypergeometric** draw
+(sequential weighted-without-replacement, weights = per-stage Beta means).
+This (a) automatically hits `Σ O_s = y_t`, (b) respects per-cohort budgets
+`O_s ≤ U[s]`, and (c) matches the target marginal means so IS weight
+variance stays manageable.
+
+```bash
+uv run python examples/12_model_d_gdm.py
+```
+
+Output: `figures/12_model_d_gdm.png` + `figures/12_model_d_gdm_forecasts.png` · ~2 min.
+
+The 6-panel diagnostic figure adds two Model-E-specific panels: a stacked
+bar chart decomposing `y_t` into per-stage cohort contributions (the truth's
+partition `O`), and a 6-axis posterior strip for the Liu-West cloud (now
+6-D: `(log σ_vR, log σ_vF, log μ, b_0, b_1, log_M)`).
+
+## What's where: A / B / C / D / E cheat-sheet
+
+| Model | Latent dynamics | Liu-West parameters | Observation | Proposal |
+|---|---|---|---|---|
+| **A** (`pf/model.py`)          | log Rt RW with σ_R state walked by τ        | `(log τ_R, log τ_F, log φ)`    | delay-conv + NegBin | bootstrap |
+| **B** (`pf/model_sigma.py`)    | log Rt RW with σ_R as LW param              | `(log σ_R, log σ_F, log φ)`    | delay-conv + NegBin | bootstrap |
+| **C** (`pf/model_trend.py`)    | integrated BM (log Rt + v_R)                | `(log σ_vR, log σ_vF, log φ)`  | delay-conv + NegBin | bootstrap |
+| **D** (`pf/model_discrete.py`) | C + **Poisson I** + immigration             | `(log σ_vR, log σ_vF, log μ, log φ)` | delay-conv + NegBin | bootstrap |
+| **E** (`pf/model_gdm.py`)      | D + ascertainment thinning + cohort U-buffer | `(log σ_vR, log σ_vF, log μ, b_0, b_1, log_M)` | **GDM cohort partition** | **guided (Wallenius)** |
