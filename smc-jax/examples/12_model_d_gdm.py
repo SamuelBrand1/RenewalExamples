@@ -26,6 +26,7 @@ The Liu-West cloud is 6-D:
 from __future__ import annotations
 
 import dataclasses
+from pathlib import Path
 
 import _common  # noqa: F401
 import jax
@@ -43,34 +44,37 @@ from smc_renewal.pf.model_gdm import (
 )
 from smc_renewal.pf.runner_gdm import run_liu_west_gdm
 
+# Locked synthetic dataset path — example 13 (NegBin model on the same data)
+# loads from here.
+DATA_DIR = Path(__file__).parent / "data"
+TRUTH_NPZ = DATA_DIR / "12_truth.npz"
+
 
 def simulate_outbreak_gdm(
     key,
     cfg,
     T: int,
     truth_log_Rt_init: float,
-    truth_log_F_init: float,
+    truth_v_R_init: float,
     truth_log_I0: float,
     truth_log_sigma_vR: float,
-    truth_log_sigma_vF: float,
-    truth_log_mu: float,
     truth_b_0: float,
     truth_b_1: float,
     truth_log_M: float,
 ):
     """Forward-simulate Model E for ``T`` days using its own data-generating
-    mechanism (GDM partition).
+    mechanism (GDM partition).  No immigration, no F-feedback.
 
-    log_Rt and log_F are not forced — they walk naturally from the given
-    initial values.  F-feedback bends the curve as the outbreak grows; no
-    seasonal forcing.  Returns the latent trajectory, expected daily cases
-    (= sum of cohort BetaBin means), the actual partition history, and the
-    observed daily counts.
+    A negative ``truth_v_R_init`` is what bends the outbreak — `log Rt`
+    drifts downward as the integrated velocity accumulates, taking Rt from
+    above 1 (early growth) through 1 (peak) to below 1 (decline).  No
+    susceptibility-depletion mechanism is needed.
+
+    Returns the latent trajectory, the cohort-partition history ``O_traj``,
+    and the observed daily counts.
     """
     truth_params = ParticleParamsGDM(
         log_sigma_vR=jnp.asarray(truth_log_sigma_vR),
-        log_sigma_vF=jnp.asarray(truth_log_sigma_vF),
-        log_mu=jnp.asarray(truth_log_mu),
         b_0=jnp.asarray(truth_b_0),
         b_1=jnp.asarray(truth_b_1),
         log_M=jnp.asarray(truth_log_M),
@@ -78,13 +82,12 @@ def simulate_outbreak_gdm(
     I0 = jnp.maximum(jnp.round(jnp.exp(jnp.asarray(truth_log_I0))), 1.0).astype(jnp.int64)
     init_state = ParticleStateGDM(
         log_Rt=jnp.asarray(truth_log_Rt_init),
-        v_R=jnp.asarray(0.0),
-        log_F=jnp.asarray(truth_log_F_init),
-        v_F=jnp.asarray(0.0),
+        v_R=jnp.asarray(truth_v_R_init),
         log_I0=jnp.asarray(truth_log_I0),
-        I_buf=jnp.full((cfg.buffer_len,), I0),
-        # Fresh outbreak: no phantom unreported cases from pre-history.
-        U_buf=jnp.zeros((cfg.buffer_len,), dtype=jnp.int64),
+        # Contact-tracing renewal reads λ_t from U_buf — seed it with
+        # ``I0`` per age-slot ("I0 infectious people per day across the past
+        # L days, none yet observed at t=0").
+        U_buf=jnp.full((cfg.buffer_len,), I0),
     )
 
     step_keys = jr.split(key, T)
@@ -107,66 +110,118 @@ def main():
     _common.set_clean_style()
 
     # --- truth values ---
-    truth_log_Rt_init = 0.55      # Rt ≈ 1.73, outbreak ascent
-    truth_log_F_init = -6.0       # F ≈ 2.5e-3, modest feedback that bends curve
-    truth_log_I0 = 1.0            # I0 ≈ 2.7 cases (small seed)
-    truth_log_sigma_vR = -7.0     # σ_vR ≈ 9e-4 / day
-    truth_log_sigma_vF = -10.0    # σ_vF ≈ 4.5e-5 / day (slow F drift)
-    truth_log_mu = 0.0            # μ ≈ 1 imported case / day
-    truth_b_0 = 0.2               # p_0 ≈ 0.58 (58 % same-day)
-    truth_b_1 = 0.4               # p_s climbs with stage → fast clearance
-    truth_log_M = 3.5             # M ≈ 33, moderate Beta concentration
+    # Short outbreak (50 days) with HIGH per-cohort reporting over-dispersion
+    # (small M).  This is the regime where the GDM observation model and
+    # the auxiliary-q Wallenius proposal are most clearly justified — naive
+    # NegBin-on-delay-conv blurs the cohort-budget coupling, and a
+    # fixed-p Wallenius proposal would have catastrophic IS variance.
+    # Tuned for a contact-tracing outbreak: tracing depletes the U-buffer as
+    # cases are reported, which bends the curve naturally.  Need Rt large
+    # enough to survive the depletion drag, but not so large that the
+    # outbreak explodes past sampler bounds.
+    truth_log_Rt_init = 0.75      # Rt ≈ 2.12 — high enough that with the
+                                  # very small σ_vR below, log Rt is
+                                  # essentially guaranteed to stay above 0
+                                  # over the 25-day observation window
+    truth_v_R_init = 0.0
+    truth_log_I0 = 1.0            # I0 ≈ 2.7 per past-day slot
+    truth_log_sigma_vR = -7.0     # σ_vR ≈ 9e-4 / day — small enough that
+                                  # accumulated drift over 25 days has SD
+                                  # ≈ 0.06, keeping log Rt safely above 0
+    truth_b_0 = -1.5              # moderately slow reporting: p_1 = Φ(−1.5) ≈ 0.067
+    truth_b_1 = 0.4               # mean reporting lag ≈ 3.5 days
+    truth_log_M = 3.5             # M ≈ 33 — tight enough Beta that IS
+                                  # variance stays manageable; cohort noise
+                                  # still visibly above Binomial baseline
 
     cfg = dataclasses.replace(
         default_config(),
         sigma_floor=1e-6,
-        ascertainment_alpha=0.9,
+        ascertainment_alpha=1.0,      # 100 % ascertainment — Hantavirus-style.
+                                       # Only "missing" cases come from tail
+                                       # truncation (negligible at L = 14).
         # priors offset from truth to give the model something to learn
-        init_log_Rt_mean=0.2,         # truth 0.55
+        init_log_Rt_mean=0.4,         # truth 0.75
         init_log_Rt_sd=0.4,
-        init_v_R_mean=0.0,
-        init_v_R_sd=0.02,
-        init_log_sigma_vR_mean=-6.0,
+        init_v_R_mean=0.0,            # truth 0 (Rt held essentially constant)
+        init_v_R_sd=0.04,
+        init_log_sigma_vR_mean=-7.0,  # truth -10
         init_log_sigma_vR_sd=1.0,
-        init_log_F_mean=-6.0,         # prior centred on truth
-        init_log_F_sd=1.0,
-        init_v_F_mean=0.0,
-        init_v_F_sd=1e-4,
-        init_log_sigma_vF_mean=-9.0,
-        init_log_sigma_vF_sd=1.0,
-        init_log_I0_mean=1.0,
+        init_log_I0_mean=1.0,         # truth 1.0
         init_log_I0_sd=0.5,
-        init_log_mu_mean=0.0,
-        init_log_mu_sd=0.6,
-        # GDM delay priors
-        init_b0_mean=0.0,
-        init_b0_sd=0.5,
+        # GDM delay priors.  Prior centred at b_0 = -1.0 (≈ 16% reported
+        # at lag 1) — what we'd reasonably expect a priori for a "tracing
+        # catches infections" workflow, not chasing truth.  Wide sd so the
+        # cloud can reach the truth of b_0 = -1.5 (slower reporting).
+        init_b0_mean=-1.0,
+        init_b0_sd=1.0,
         init_b1_mean=0.2,
         init_b1_sd=0.3,
-        init_log_M_mean=3.0,
-        init_log_M_sd=0.6,
+        init_log_M_mean=3.0,          # truth 3.5
+        init_log_M_sd=0.7,
     )
 
-    T = 70
+    T = 50
     print(
         f"Model E outbreak: T={T} days, "
         f"truth log_Rt_init={truth_log_Rt_init:.2f}, "
-        f"log_F_init={truth_log_F_init:.2f}, "
-        f"α={cfg.ascertainment_alpha:.2f}"
+        f"α={cfg.ascertainment_alpha:.2f} (no immigration, no F-feedback, "
+        f"min delay 1 day)"
     )
 
-    truth_traj, y, O_traj = simulate_outbreak_gdm(
-        jr.key(7), cfg, T,
-        truth_log_Rt_init, truth_log_F_init, truth_log_I0,
-        truth_log_sigma_vR, truth_log_sigma_vF, truth_log_mu,
-        truth_b_0, truth_b_1, truth_log_M,
-    )
+    # Resample seeds until the outbreak (a) doesn't fizzle and (b) keeps
+    # log Rt strictly above 0 through day 25 — so that any bending in
+    # cases attributable to "Rt fell" is structurally impossible in the
+    # truth, leaving contact-tracing depletion as the only mechanism.
+    for trial_seed in range(50):
+        truth_traj, y, O_traj = simulate_outbreak_gdm(
+            jr.key(trial_seed), cfg, T,
+            truth_log_Rt_init, truth_v_R_init, truth_log_I0,
+            truth_log_sigma_vR,
+            truth_b_0, truth_b_1, truth_log_M,
+        )
+        I_total_early = int(jnp.sum(truth_traj.U_buf[:8, 0]))
+        I_total = int(jnp.sum(truth_traj.U_buf[:, 0]))
+        min_logRt_first25 = float(jnp.min(truth_traj.log_Rt[:25]))
+        if (
+            I_total_early >= 20
+            and I_total >= 200
+            and min_logRt_first25 > 0.0
+        ):
+            print(f"  truth seed = {trial_seed},  "
+                  f"min log Rt over days 1-25 = {min_logRt_first25:+.3f}")
+            break
+    else:
+        raise RuntimeError(
+            "no outbreak-taking-off-with-Rt-above-1 found across 50 seeds — "
+            "consider raising truth_log_Rt_init or lowering truth_log_sigma_vR"
+        )
     # Truth quantities
-    I_truth = truth_traj.I_buf[:, 0].astype(jnp.float64)
+    I_truth = truth_traj.U_buf[:, 0].astype(jnp.float64)
     log_Rt_truth = truth_traj.log_Rt
-    log_F_truth = truth_traj.log_F
     y_np = np.asarray(y).astype(int)
     print(f"  peak y_t = {int(y_np.max())}, total cases = {int(y_np.sum())}")
+
+    # Lock in the synthetic dataset so example 13 (and any future comparison)
+    # operates on byte-identical observations + ground truth.
+    DATA_DIR.mkdir(exist_ok=True)
+    np.savez(
+        TRUTH_NPZ,
+        y=y_np,
+        I_truth=np.asarray(I_truth),
+        log_Rt_truth=np.asarray(log_Rt_truth),
+        O_traj=np.asarray(O_traj),
+        T=T,
+        truth_log_Rt_init=truth_log_Rt_init,
+        truth_v_R_init=truth_v_R_init,
+        truth_log_I0=truth_log_I0,
+        truth_log_sigma_vR=truth_log_sigma_vR,
+        truth_b_0=truth_b_0,
+        truth_b_1=truth_b_1,
+        truth_log_M=truth_log_M,
+        ascertainment_alpha=cfg.ascertainment_alpha,
+    )
+    print(f"  locked synthetic data → {TRUTH_NPZ}")
 
     # --- inference ---
     N = 8000
@@ -180,11 +235,11 @@ def main():
 
     lw = result.log_weights_history
     log_Rt_p = result.particles_history.log_Rt
-    log_F_p = result.particles_history.log_F
-    I_p = result.particles_history.I_buf[:, :, 0].astype(jnp.float64)
+    # I(t) trace = freshest cohort slot post-step.  Under min-delay-1-day
+    # and α = 1, no observations apply to age-0, so U_buf[..., 0] at the
+    # end of step t equals the sampled N_t for that step.
+    I_p = result.particles_history.U_buf[:, :, 0].astype(jnp.float64)
     log_sigma_vR_p = result.params_history.log_sigma_vR
-    log_sigma_vF_p = result.params_history.log_sigma_vF
-    log_mu_p = result.params_history.log_mu
     b_0_p = result.params_history.b_0
     b_1_p = result.params_history.b_1
     log_M_p = result.params_history.log_M
@@ -193,38 +248,31 @@ def main():
     log_Rt_q = jnp.stack(
         [jax.vmap(weighted_quantile)(log_Rt_p, lw, jnp.full((T,), q)) for q in qs]
     )
-    log_F_q = jnp.stack(
-        [jax.vmap(weighted_quantile)(log_F_p, lw, jnp.full((T,), q)) for q in qs]
-    )
     I_q = jnp.stack(
         [jax.vmap(weighted_quantile)(I_p, lw, jnp.full((T,), q)) for q in qs]
     )
 
     final_lw = lw[-1]
     cov_logRt = float(jnp.mean((log_Rt_truth >= log_Rt_q[0]) & (log_Rt_truth <= log_Rt_q[2])))
-    cov_logF = float(jnp.mean((log_F_truth >= log_F_q[0]) & (log_F_truth <= log_F_q[2])))
     cov_I = float(jnp.mean((I_truth >= I_q[0]) & (I_truth <= I_q[2])))
     print(f"  log_Rt 90% filter cov   {cov_logRt:.3f}")
-    print(f"  log_F  90% filter cov   {cov_logF:.3f}")
     print(f"  I(t)    90% filter cov   {cov_I:.3f}")
     print(f"  min ESS = {float(result.ess_history.min()):.1f} (out of {N})")
     print(f"  final log_σ_vR post mean: {float(_wmean(log_sigma_vR_p[-1], final_lw)):+.3f}  (truth {truth_log_sigma_vR:+.3f})")
-    print(f"  final log_σ_vF post mean: {float(_wmean(log_sigma_vF_p[-1], final_lw)):+.3f}  (truth {truth_log_sigma_vF:+.3f})")
-    print(f"  final log_μ    post mean: {float(_wmean(log_mu_p[-1], final_lw)):+.3f}  (truth {truth_log_mu:+.3f})")
     print(f"  final b_0      post mean: {float(_wmean(b_0_p[-1], final_lw)):+.3f}  (truth {truth_b_0:+.3f})")
     print(f"  final b_1      post mean: {float(_wmean(b_1_p[-1], final_lw)):+.3f}  (truth {truth_b_1:+.3f})")
     print(f"  final log_M    post mean: {float(_wmean(log_M_p[-1], final_lw)):+.3f}  (truth {truth_log_M:+.3f})")
 
-    # --- figure 1: 6 panels ---
+    # --- figure 1: 5 panels ---
     t = np.arange(T)
-    fig = plt.figure(figsize=(13, 15), constrained_layout=False)
-    gs = fig.add_gridspec(6, 1, hspace=0.55,
-                          height_ratios=[1, 1, 1, 1, 0.9, 0.9])
+    fig = plt.figure(figsize=(13, 13), constrained_layout=False)
+    gs = fig.add_gridspec(5, 1, hspace=0.55,
+                          height_ratios=[1, 1, 1, 0.9, 0.9])
 
     ax = fig.add_subplot(gs[0])
     ax.plot(t, y_np, "o-", color="k", ms=4, alpha=0.7, label="observed y_t")
     ax.set_ylabel("daily cases")
-    ax.set_title("Model E — outbreak analysis (GDM observation delay)")
+    ax.set_title("Model E — contact-tracing outbreak (GDM observation delay)")
     ax.legend(loc="upper right", frameon=False, fontsize=9)
 
     ax = fig.add_subplot(gs[1])
@@ -236,14 +284,6 @@ def main():
     ax.legend(loc="upper right", frameon=False, fontsize=8, ncol=3)
 
     ax = fig.add_subplot(gs[2])
-    ax.plot(t, log_F_truth, color="k", lw=1.4, label="truth")
-    ax.fill_between(t, log_F_q[0], log_F_q[2], color="C3", alpha=0.2, label="filter 90%")
-    ax.plot(t, log_F_q[1], color="C3", lw=1.0, label="filter median")
-    ax.set_ylabel("log F(t)")
-    ax.set_title(f"log F tracking — filter 90% cov {cov_logF:.2f}")
-    ax.legend(loc="upper right", frameon=False, fontsize=8, ncol=3)
-
-    ax = fig.add_subplot(gs[3])
     ax.plot(t, np.maximum(np.asarray(I_truth), 0.5), color="k", lw=1.0, label="truth I(t)")
     ax.fill_between(t, np.maximum(np.asarray(I_q[0]), 0.5), np.maximum(np.asarray(I_q[2]), 0.5),
                     color="C2", alpha=0.2, label="filter 90%")
@@ -253,9 +293,9 @@ def main():
     ax.set_xlabel("day")
     ax.legend(loc="upper right", frameon=False, fontsize=8, ncol=3)
 
-    # Panel 4: cohort partition decomposition (truth-side) for selected days.
-    ax = fig.add_subplot(gs[4])
-    pick_days = [d for d in (10, 20, 30, 45, 60) if d < T]
+    # Panel 3: cohort partition decomposition (truth-side) for selected days.
+    ax = fig.add_subplot(gs[3])
+    pick_days = [d for d in (8, 16, 24, 34, 44) if d < T]
     L = cfg.buffer_len
     bottoms = np.zeros(len(pick_days))
     stage_cmap = plt.cm.viridis(np.linspace(0.1, 0.9, L))
@@ -273,18 +313,13 @@ def main():
     ax.set_title("Decomposition of y_t into per-cohort lag contributions (truth)")
     ax.legend(loc="upper right", frameon=False, fontsize=7, ncol=3)
 
-    # Panel 5: 6-axis posterior strip
-    gs_bot = gs[5].subgridspec(1, 6, wspace=0.45)
+    # Panel 4: 4-axis posterior strip
+    gs_bot = gs[4].subgridspec(1, 4, wspace=0.45)
     wF = jnp.exp(final_lw - jnp.max(final_lw)); wF = wF / wF.sum()
     panels = [
         ("log σ_vR", log_sigma_vR_p[-1], "C1",
          float(cfg.init_log_sigma_vR_mean), float(cfg.init_log_sigma_vR_sd),
          truth_log_sigma_vR),
-        ("log σ_vF", log_sigma_vF_p[-1], "C6",
-         float(cfg.init_log_sigma_vF_mean), float(cfg.init_log_sigma_vF_sd),
-         truth_log_sigma_vF),
-        ("log μ", log_mu_p[-1], "C5",
-         float(cfg.init_log_mu_mean), float(cfg.init_log_mu_sd), truth_log_mu),
         ("b_0", b_0_p[-1], "C8",
          float(cfg.init_b0_mean), float(cfg.init_b0_sd), truth_b_0),
         ("b_1", b_1_p[-1], "C9",
@@ -311,7 +346,7 @@ def main():
             a.legend(loc="upper right", frameon=False, fontsize=7)
 
     fig.suptitle(
-        "Model E — discrete renewal + GDM observation delay + guided PF proposal",
+        "Model E — contact-tracing renewal + GDM observation delay + guided PF proposal",
         y=0.998,
     )
     out = _common.save(fig, "12_model_d_gdm.png")
@@ -319,7 +354,7 @@ def main():
 
     # --- figure 2: sequential forecast fan ---
     h_max = 14
-    origins = [d for d in (25, 40, 55) if d + h_max <= T]
+    origins = [d for d in (15, 25, 35) if d + h_max <= T]
     print(f"\nsequential forecasts at origins {origins}, horizon {h_max}d:")
 
     def forecast_from_cloud_gdm(key, cfg, particles, params, h_max):
@@ -337,7 +372,8 @@ def main():
         return y_traj  # shape (h_max, N)
 
     fig2, ax = plt.subplots(1, 1, figsize=(12, 5.5))
-    ax.plot(t, y_np, "o-", color="k", lw=0.7, ms=3, alpha=0.6, label="observed y_t")
+    ax.plot(t, np.maximum(y_np.astype(float), 0.5), "o-", color="k", lw=0.7,
+            ms=3, alpha=0.6, label="observed y_t")
 
     forecast_colors = ["C2", "C3", "C4"]
     for i, (t0, color) in enumerate(zip(origins, forecast_colors)):
@@ -355,13 +391,18 @@ def main():
                 y_fc, lw_t0, jnp.asarray(q)
             ) for q in qs5
         ])
-        ax.fill_between(h_t, Q[0], Q[4], color=color, alpha=0.12)
-        ax.fill_between(h_t, Q[1], Q[3], color=color, alpha=0.24)
-        ax.plot(h_t, Q[2], color=color, lw=1.4, label=f"forecast from day {t0}")
+        ax.fill_between(h_t, jnp.maximum(Q[0], 0.5), jnp.maximum(Q[4], 0.5),
+                        color=color, alpha=0.12)
+        ax.fill_between(h_t, jnp.maximum(Q[1], 0.5), jnp.maximum(Q[3], 0.5),
+                        color=color, alpha=0.24)
+        ax.plot(h_t, jnp.maximum(Q[2], 0.5), color=color, lw=1.4,
+                label=f"forecast from day {t0}")
         ax.axvline(t0, color=color, lw=0.6, ls="--", alpha=0.5)
 
     ax.set_xlabel("day")
-    ax.set_ylabel("daily cases")
+    ax.set_ylabel("daily cases (log scale)")
+    ax.set_yscale("log")
+    ax.set_ylim(0.5, 1e5)
     ax.set_title(
         f"Model E sequential forecasts (50% and 95% PIs, {h_max}-day horizon)"
     )

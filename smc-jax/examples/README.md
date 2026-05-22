@@ -232,9 +232,9 @@ from prior toward truth, log_φ sharply identified.
 
 ## 12 — Model E: outbreak analysis with GDM observation delay + guided PF proposal
 
-Short single-outbreak (T=70 days) demonstrating that **high-ascertainment
-regimes break the conditional-independence assumption** of examples 01–11's
-observation model.  When ascertainment is close to 1, observations across
+Short single-outbreak (T=50 days, **no immigration** — pure single-seed
+takeoff) demonstrating that **high-ascertainment regimes break the
+conditional-independence assumption** of examples 01–11's observation model.  When ascertainment is close to 1, observations across
 days from a single cohort are coupled through cohort-budget constraints:
 if `N` people are infected, at most `N` of them can ever be observed, and
 once individual reports on day `t` they can't be re-reported on day
@@ -249,12 +249,18 @@ per-stage Beta means parameterised on the probit scale,
 
 Because the observation is now coupled with the latent partition, a
 bootstrap PF fails (almost no particle samples a partition that hits the
-observed `y_t` exactly).  We use a **guided proposal** for the cohort
-partition: a multivariate **Wallenius noncentral hypergeometric** draw
-(sequential weighted-without-replacement, weights = per-stage Beta means).
+observed `y_t` exactly).  We use a **Rao-Blackwellised auxiliary-q guided
+proposal** for the cohort partition: per stage, draw `q_s ~ Beta(α_s, β_s)`
+(the GDM stick-breaking variable that the BetaBin marginalises over), then
+sample the partition via a multivariate **Wallenius noncentral
+hypergeometric** weighted by `q_s` (sequential weighted-without-replacement).
 This (a) automatically hits `Σ O_s = y_t`, (b) respects per-cohort budgets
-`O_s ≤ U[s]`, and (c) matches the target marginal means so IS weight
-variance stays manageable.
+`O_s ≤ U[s]`, and (c) keeps IS weight tails bounded — because the
+proposal's `q_s` is drawn from its prior rather than fixed at the mean,
+it absorbs the BetaBin over-dispersion that would otherwise make
+`target / proposal` heavy-tailed.  The Beta priors cancel in the IS weight,
+leaving a clean `Bin / Wallenius` ratio plus a multinomial-coefficient
+correction.
 
 ```bash
 uv run python examples/12_model_d_gdm.py
@@ -262,10 +268,100 @@ uv run python examples/12_model_d_gdm.py
 
 Output: `figures/12_model_d_gdm.png` + `figures/12_model_d_gdm_forecasts.png` · ~2 min.
 
-The 6-panel diagnostic figure adds two Model-E-specific panels: a stacked
+The 5-panel diagnostic figure adds two Model-E-specific panels: a stacked
 bar chart decomposing `y_t` into per-stage cohort contributions (the truth's
-partition `O`), and a 6-axis posterior strip for the Liu-West cloud (now
-6-D: `(log σ_vR, log σ_vF, log μ, b_0, b_1, log_M)`).
+partition `O`), and a 4-axis posterior strip for the Liu-West cloud
+(`(log σ_vR, b_0, b_1, log_M)`).  The truth uses a small Beta concentration
+`M ≈ 7.4` so cohort-level over-dispersion is *visible* in the daily counts
+— `y_t` bounces ±50 around trend, which a NegBin observation model would
+absorb as measurement noise but is in fact a structural feature of
+cohort-budget bookkeeping.
+
+## 13 — Model C (NegBin observation) on Model E's contact-tracing data
+
+Loads the locked synthetic dataset from example 12 (`examples/data/12_truth.npz`)
+and fits **Model C** to it — same velocity-driven dynamics, but with a
+delay-conv + NegBin observation model and **no contact-tracing depletion in
+the renewal kernel**.  Model C's delay PMF is set to the GDM's marginal lag
+distribution so the comparison isolates the *dynamics* layer (contact tracing
+vs no contact tracing).
+
+```bash
+uv run python examples/13_model_c_on_gdm_data.py
+```
+
+Output: `figures/13_model_c_on_gdm_data.png` · ~30 s.
+
+**Findings.**  Model C *fits the observed cases* fine — NegBin
+over-dispersion soaks up the cohort noise, the I(t) coverage even hits
+nominal — but its **inferred log Rt is structurally wrong**.
+
+| Metric                | Model E (ex 12, contact tracing in the model) | Model C (ex 13, no contact tracing) |
+|---|---|---|
+| log Rt 90% coverage   | 0.98 (near nominal)               | **0.34** (badly under nominal)      |
+| log Rt filter-median RMSE | small                          | ~0.6 nat (very large)               |
+| I(t)    90% coverage  | 0.96 (near nominal)               | 0.90 (nominal)                       |
+| Min ESS / N           | ~9 / 8000                         | ~590 / 8000                          |
+
+The truth `log Rt = 0.7` is essentially constant (Rt = 2.0 throughout —
+transmission never actually slows).  The reason cases peak and decline is
+that **contact tracing depletes the still-circulating-and-infectious pool
+faster than new infections replenish it**.  Model C doesn't have that
+mechanism, so to fit the observed decline it is forced to attribute the
+bending to a *falling Rt*: its filter median drifts from ~+0.4 down to
+~−1.5 over the 50 days.
+
+This is a genuine structural failure rather than a precision one.  Model C
+would report "Rt has crashed below 1, transmission has slowed dramatically"
+when the truth is "Rt is still ~2 but tracing is faster than transmission".
+The two are **operationally opposite**: in the first story, relaxing
+interventions is safe (transmission has died down); in the second,
+relaxing tracing would re-ignite the outbreak immediately.
+
+The pedagogical lesson is sharper than the variance argument from earlier
+iterations of this example: **when the data-generating process has a
+structural feedback that the model can't represent, the model can still
+fit the observations — but it does so by misallocating the dynamics**.
+NegBin's variance sponge isn't the issue here; the missing self-limiting
+*mechanism* is.
+
+## 14 — Counterfactual: what if contact tracing stopped at day 25?
+
+Loads the locked example-12 dataset and forecasts forward from day 25
+under the hypothetical intervention **"contact tracing stops"**.  The
+twist is informational: at day 25, public health asks the model "if we
+relax tracing, what happens?".  Model E can answer the question (it has
+a contact-tracing mechanism in its dynamics); Model C cannot (it doesn't
+know what tracing is).
+
+```bash
+uv run python examples/14_counterfactual_tracing_stops.py
+```
+
+Saves a new dataset `examples/data/14_counterfactual.npz` (does *not*
+modify `12_truth.npz`) and produces
+`figures/14_counterfactual_tracing_stops.png` · ~60 s.
+
+**Findings.**  We forward-simulate the truth from day 25 with no
+contact-tracing removal — new infections stay in the renewal pool until
+they age out via the generation interval.  Day-25 to day-39 latent
+trajectory grows from ~28 to **207** cases/day (7.4×, clearly
+exponential ascent).  The headline at day 39:
+
+| | Truth (no tracing) | Model E counterfactual forecast | Model C forecast |
+|---|---|---|---|
+| Median  | 207  | ~130  | ~25  |
+| 95% upper | —   | **103,820**  | **714**  |
+
+**Model E correctly forecasts the explosion** — its median tracks the
+truth trajectory closely, and its 95% upper bound is **146× higher**
+than Model C's, because Model E knows that without tracing the dynamics
+are no longer self-limiting.  Model C, lacking the mechanism, predicts
+a tightly-bounded continued decline regardless of the intervention you
+ask about.  The operational difference: an analyst using Model C would
+say "relaxing tracing looks safe — worst case is ~700 cases/day".  An
+analyst using Model E would say "we don't know how bad this could get,
+but the worst case is in the hundreds of thousands — maintain tracing".
 
 ## What's where: A / B / C / D / E cheat-sheet
 
@@ -275,4 +371,4 @@ partition `O`), and a 6-axis posterior strip for the Liu-West cloud (now
 | **B** (`pf/model_sigma.py`)    | log Rt RW with σ_R as LW param              | `(log σ_R, log σ_F, log φ)`    | delay-conv + NegBin | bootstrap |
 | **C** (`pf/model_trend.py`)    | integrated BM (log Rt + v_R)                | `(log σ_vR, log σ_vF, log φ)`  | delay-conv + NegBin | bootstrap |
 | **D** (`pf/model_discrete.py`) | C + **Poisson I** + immigration             | `(log σ_vR, log σ_vF, log μ, log φ)` | delay-conv + NegBin | bootstrap |
-| **E** (`pf/model_gdm.py`)      | D + ascertainment thinning + cohort U-buffer | `(log σ_vR, log σ_vF, log μ, b_0, b_1, log_M)` | **GDM cohort partition** | **guided (Wallenius)** |
+| **E** (`pf/model_gdm.py`)      | velocity-driven log Rt + ascertainment thinning + cohort U-buffer; **no immigration, no F-feedback** (short-outbreak scope) | `(log σ_vR, b_0, b_1, log_M)` | **GDM cohort partition** | **guided (Rao-Blackwellised auxiliary-q Wallenius)** |
