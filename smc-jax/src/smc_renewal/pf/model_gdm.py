@@ -1,22 +1,37 @@
-"""Model E: discrete renewal + GDM observation delay with a guided proposal.
+"""Model E: discrete renewal + GDM observation delay + contact-tracing removal.
 
-Dynamics match Model D exactly (velocity-driven log Rt and log F, Poisson
-infections, immigration μ).  Two new things:
+Velocity-driven log Rt with Poisson infections.  Observations follow a
+Generalised Dirichlet Multinomial cohort partition (Stoner et al) where
+each cohort's eventually-observable cases are stick-broken across reporting
+stages via independent Beta-Binomials, parameterised on probit scale.
 
-  1. **GDM observation delay** (Stoner et al).  Each cohort's eventually-
-     observable cases are stick-broken across reporting stages via
-     independent Beta-Binomials, with per-stage Beta means controlled by a
-     probit-linear-in-stage law.  Replaces the simple delay-conv + NegBin
-     observation of Model D.
+**Contact-tracing semantics**: when a case is reported it is also removed
+from circulation — its infectious contribution to future transmission
+stops at that point.  This is implemented by using the per-cohort
+*remaining-unreported* buffer ``U_buf`` in the renewal kernel instead of
+the *total infections* buffer ``I_buf``:
 
-  2. **Guided proposal** for the cohort partition.  At each step we sample
-     ``(O_0, …, O_{L−1}) ~ MultivariateHypergeometric(U, y_t)`` — which
-     automatically (a) hits ``Σ O_s = y_t`` and (b) respects per-cohort
-     budget ``O_s ≤ U[s]``.  The IS weight against the target BetaBin
-     product has a clean closed form (binomial coefficients cancel).
+    λ_t  =  Rt_eff  ·  Σ_k g(k) · U_buf[k]
 
-The Liu-West cloud is 6-D:
-``(log σ_vR, log σ_vF, log μ, b_0, b_1, log_M)``.
+Effective Rt is therefore self-limiting through observation: a more
+efficient surveillance (faster / higher-probability reporting) drains
+``U_buf`` faster and chokes off transmission.  No F-feedback term — the
+contact tracing IS the bending mechanism.
+
+Three new things relative to Model D:
+
+  1. **GDM observation delay** with probit-linear-in-stage Beta means and
+     minimum delay = 1 day (no same-day reporting).
+
+  2. **Contact-tracing renewal** (the U-buffer enters the renewal kernel,
+     not the I-buffer).  This is the structural self-limiting force.
+
+  3. **Auxiliary-q Rao-Blackwellised Wallenius proposal** for the cohort
+     partition — sample ``q_s ~ Beta(α_s, β_s)`` per stage, then
+     ``O ~ Wallenius(U, q_s, y_t)``.  Beta priors cancel in the IS weight;
+     ``Bin/Wallenius`` ratio with multinomial-coefficient correction.
+
+Liu-West cloud (4-D): ``(log σ_vR, b_0, b_1, log_M)``.
 """
 
 from __future__ import annotations
@@ -34,6 +49,7 @@ from smc_renewal.observation_gdm import (
     betabinom_loglik,
     gdm_beta_params,
     gdm_hypergeom_logweight,
+    wallenius_aux_logweight,
 )
 from smc_renewal.transition import _pad_pmf
 
@@ -45,28 +61,40 @@ GDM_MAX_K = 800
 
 # Static upper bound on y_t — used by the Wallenius sequential sampler to
 # size its fixed-length inner scan.  Iterations beyond y_t are masked out.
-WALLENIUS_MAX_Y = 250
+# MUST be ≥ max(y_t) across the trajectory or the partition is silently
+# truncated and IS weights blow up.
+WALLENIUS_MAX_Y = 800
 
 
 class ParticleStateGDM(NamedTuple):
-    """Model E state: same dynamics state as Model D, plus a U-buffer that
-    tracks per-cohort remaining unreported counts."""
+    """Model E state: velocity-driven log Rt + single per-cohort buffer.
+
+    There's only ONE buffer because under contact-tracing-with-100%-
+    ascertainment, "total infections per cohort" and "still-circulating
+    infections per cohort" are the same concept differing only in time:
+    at each step we *add* new infections to slot 0 and *subtract* observed
+    cases across all slots.  No separate "I_buf" / "U_buf" distinction is
+    needed.
+
+    The latent-infection time series ``N_t`` can be recovered from
+    ``U_buf[..., 0]`` at the end of any step (the freshest cohort, which —
+    with minimum delay 1 day — hasn't had any observations applied yet, so
+    its remaining-unreported equals its total)."""
 
     log_Rt: Array
     v_R: Array
-    log_F: Array
-    v_F: Array
     log_I0: Array
-    I_buf: Array   # shape (L,), Poisson draws — used for renewal
-    U_buf: Array   # shape (L,), remaining unreported per cohort age
+    U_buf: Array   # shape (L,), still-circulating per cohort age
 
 
 class ParticleParamsGDM(NamedTuple):
-    """6-D Liu-West cloud for Model E."""
+    """4-D Liu-West cloud for Model E.
+
+    No immigration parameter (μ = 0, single-seed outbreak).
+    No F-feedback parameter (susceptibility depletion dropped).
+    """
 
     log_sigma_vR: Array
-    log_sigma_vF: Array
-    log_mu: Array
     b_0: Array
     b_1: Array
     log_M: Array
@@ -227,32 +255,32 @@ def step_gdm_dynamics(
     state: ParticleStateGDM,
     params: ParticleParamsGDM,
     eta_R: Array,
-    eta_F: Array,
     k_pois: Array,
     k_asc: Array,
     cfg: ModelConfig,
 ) -> tuple[ParticleStateGDM, Array, Array, Array]:
-    """Advance levels/velocities, draw ``N_t`` and ``E_t``.  Returns
-    ``(state_partial, N_t, E_t, λ_t)``; buffers not yet shifted."""
+    """Advance level/velocity, draw ``N_t`` and ``E_t``.  Returns
+    ``(state_partial, N_t, E_t, λ_t)``; buffers not yet shifted.
+
+    **Contact-tracing renewal**: the kernel uses ``U_buf`` (per-cohort
+    remaining-unreported = still-circulating infectious people) rather than
+    ``I_buf`` (total infections per cohort).  Once a case is reported it
+    is also removed from circulation — its g-weighted contribution to
+    future transmission stops.
+    """
     L = cfg.buffer_len
     g_pad = _pad_pmf(cfg.generation_interval, L)
 
     sigma_vR = jnp.maximum(jnp.exp(params.log_sigma_vR), cfg.sigma_floor)
-    sigma_vF = jnp.maximum(jnp.exp(params.log_sigma_vF), cfg.sigma_floor)
-    mu = jnp.exp(params.log_mu)
     alpha_asc = cfg.ascertainment_alpha
 
     log_Rt_new = state.log_Rt + state.v_R
-    log_F_new = state.log_F + state.v_F
     v_R_new = state.v_R + sigma_vR * eta_R
-    v_F_new = state.v_F + sigma_vF * eta_F
 
-    g_conv_I = jnp.dot(g_pad, state.I_buf.astype(jnp.float64))
-    F_new = jnp.exp(log_F_new)
-    log_Rt_clipped = jnp.clip(log_Rt_new, -20.0, 20.0)
-    exponent = jnp.clip(log_Rt_clipped - F_new * g_conv_I, -20.0, 20.0)
-    Rt_eff = jnp.exp(exponent)
-    lambda_t = jnp.clip(mu + Rt_eff * g_conv_I, 1e-12, 1e12)
+    # Renewal from the *still-un-observed* buffer — contact-tracing removal.
+    g_conv = jnp.dot(g_pad, state.U_buf.astype(jnp.float64))
+    Rt_eff = jnp.exp(jnp.clip(log_Rt_new, -20.0, 20.0))
+    lambda_t = jnp.clip(Rt_eff * g_conv, 1e-12, 1e12)
 
     N_t = jr.poisson(k_pois, lambda_t).astype(jnp.int64)
     E_t = _sample_binomial(k_asc, N_t, jnp.asarray(alpha_asc, dtype=jnp.float64))
@@ -260,10 +288,7 @@ def step_gdm_dynamics(
     state_partial = ParticleStateGDM(
         log_Rt=log_Rt_new,
         v_R=v_R_new,
-        log_F=log_F_new,
-        v_F=v_F_new,
         log_I0=state.log_I0,
-        I_buf=state.I_buf,
         U_buf=state.U_buf,
     )
     return state_partial, N_t, E_t, lambda_t
@@ -279,14 +304,18 @@ def propose_gdm_partition(
     log_M: Array,
     cfg: ModelConfig,
 ) -> tuple[Array, Array]:
-    """Guided proposal: sample the cohort partition via **Wallenius**
-    noncentral hypergeometric (weighted sequential without-replacement) and
-    return ``(O, Δlog w)``.
+    """Guided proposal: **Rao-Blackwellised auxiliary-q Wallenius**.
 
-    Weights are the per-stage Beta means ``p_s = α_s / (α_s + β_s)``, which
-    matches the target's marginal mean structure — substantially lower IS
-    weight variance than the vanilla multivariate-hypergeometric proposal.
-    Cost: ``O(y_t · L)`` per particle per step.
+    At each step we draw per-stage reporting probabilities ``q_s`` from their
+    prior ``Beta(α_s, β_s)``, then sample the cohort partition via Wallenius
+    noncentral hypergeometric with weights ``q_s``.  This absorbs the BetaBin
+    over-dispersion into the proposal — IS weight tails no longer dominated
+    by the target's Beta-marginal-vs-fixed-p mismatch.
+
+    Augmented target ``p_aug(O, q | y_t) ∝ ∏_s Bin(O_s; U_s, q_s) ·
+    Beta(q_s; α_s, β_s) · 𝟙[ΣO=y_t]``; the Beta factors cancel between
+    target and proposal, leaving a clean ``Bin / Wallenius`` ratio plus the
+    standard multinomial-coefficient correction.
 
     ``Δlog w = −∞`` when ``y_t > Σ U`` (incompatible history).
     """
@@ -297,13 +326,18 @@ def propose_gdm_partition(
     sum_U = jnp.sum(U_prop)
 
     alpha_s, beta_s = gdm_beta_params(b_0, b_1, log_M, L)
-    p_s = alpha_s / (alpha_s + beta_s)
 
     feasible = y_t <= sum_U
     safe_y = jnp.where(feasible, y_t, jnp.zeros_like(y_t))
 
-    O, log_q_ord = sample_wallenius(key, U_prop, p_s, safe_y, L)
-    log_w = wallenius_logweight(O, U_prop, log_q_ord, alpha_s, beta_s)
+    # Auxiliary-q: sample q_s ~ Beta(α_s, β_s) per stage, then Wallenius
+    # weighted by q_s (instead of fixed p_s = α_s/(α_s+β_s)).
+    k_q, k_wallenius = jr.split(key, 2)
+    q_s_raw = jr.beta(k_q, alpha_s, beta_s)
+    q_s = jnp.clip(q_s_raw, 1e-6, 1.0 - 1e-6)
+
+    O, log_q_ord = sample_wallenius(k_wallenius, U_prop, q_s, safe_y, L)
+    log_w = wallenius_aux_logweight(O, U_prop, q_s, log_q_ord)
     log_w = jnp.where(feasible, log_w, -jnp.inf)
     O = jnp.where(feasible, O, jnp.zeros_like(O))
     return O, log_w
@@ -315,20 +349,22 @@ def apply_partition_and_shift(
     E_t: Array,
     O: Array,
 ) -> ParticleStateGDM:
-    """Finalise the step: shift ``I_buf`` (prepend ``N_t``); set
-    ``U_buf_new = U_prop − O`` where ``U_prop = [E_t, U_buf_prev[:-1]]``.
+    """Finalise the step: ``U_buf_new = U_prop − O`` where
+    ``U_prop = [E_t, U_buf_prev[:-1]]``.
 
     No additional shift on ``U_buf_new`` because the indexing convention is
     ``U_buf[k] = remaining for cohort (t)−k`` at the *end* of step t (which
-    becomes ``cohort (t+1)−1−k`` at the start of step t+1 — same value)."""
-    I_buf_new = jnp.concatenate(
-        [N_t.astype(state_partial.I_buf.dtype)[None], state_partial.I_buf[:-1]]
-    )
+    becomes ``cohort (t+1)−1−k`` at the start of step t+1 — same value).
+
+    ``N_t`` is unused here (single-buffer state) but kept in the signature
+    for parity with the old API in case callers want it.
+    """
+    del N_t  # retained in signature; not needed in single-buffer formulation
     U_prop = jnp.concatenate(
         [E_t.astype(state_partial.U_buf.dtype)[None], state_partial.U_buf[:-1]]
     )
     U_buf_new = U_prop - O.astype(U_prop.dtype)
-    return state_partial._replace(I_buf=I_buf_new, U_buf=U_buf_new)
+    return state_partial._replace(U_buf=U_buf_new)
 
 
 def propose_step(
@@ -344,9 +380,9 @@ def propose_step(
     ``state_sample`` + ``meas_lpdf`` pair for Model E.
     """
     k_eta, k_pois, k_asc, k_part = jr.split(key, 4)
-    eta = jr.normal(k_eta, (2,))
+    eta_R = jr.normal(k_eta)
     state_partial, N_t, E_t, _ = step_gdm_dynamics(
-        state_prev, theta, eta[0], eta[1], k_pois, k_asc, cfg
+        state_prev, theta, eta_R, k_pois, k_asc, cfg
     )
     y_t_int = jnp.asarray(y_t, dtype=jnp.int64)
     O, log_w_inc = propose_gdm_partition(
@@ -374,9 +410,9 @@ def forward_step(
     mechanism.
     """
     k_eta, k_pois, k_asc, k_part = jr.split(key, 4)
-    eta = jr.normal(k_eta, (2,))
+    eta_R = jr.normal(k_eta)
     state_partial, N_t, E_t, _ = step_gdm_dynamics(
-        state_prev, theta, eta[0], eta[1], k_pois, k_asc, cfg
+        state_prev, theta, eta_R, k_pois, k_asc, cfg
     )
     L = cfg.buffer_len
     alpha_s, beta_s = gdm_beta_params(theta.b_0, theta.b_1, theta.log_M, L)
@@ -403,35 +439,35 @@ def forward_step(
 def prior_sample_gdm(
     key: Array, cfg: ModelConfig
 ) -> ParticleStateGDM:
-    """Initial state draw for the PF.  Matches ``RenewalModelDiscrete.prior_sample``
-    on the dynamics; ``U_buf`` initialised to zeros — for a fresh outbreak
-    there are no "phantom" pre-history cohorts with unreported cases."""
-    keys = jr.split(key, 5)
+    """Initial state draw for the PF.
+
+    Both ``I_buf`` and ``U_buf`` are seeded with ``I0`` per position — this
+    encodes "I0 infectious people per day across the past L days, all still
+    unobserved at t=0".  With contact-tracing renewal the U-buffer drives
+    ``λ_t``, so an all-zero seed would extinct the outbreak immediately.
+    The phantom-pre-history seed gets washed out within a few generation
+    intervals as real cohorts arrive and the phantoms are reported off.
+    """
+    keys = jr.split(key, 3)
     log_Rt = cfg.init_log_Rt_mean + cfg.init_log_Rt_sd * jr.normal(keys[0])
     v_R = cfg.init_v_R_mean + cfg.init_v_R_sd * jr.normal(keys[1])
-    log_F = cfg.init_log_F_mean + cfg.init_log_F_sd * jr.normal(keys[2])
-    v_F = cfg.init_v_F_mean + cfg.init_v_F_sd * jr.normal(keys[3])
-    log_I0 = cfg.init_log_I0_mean + cfg.init_log_I0_sd * jr.normal(keys[4])
+    log_I0 = cfg.init_log_I0_mean + cfg.init_log_I0_sd * jr.normal(keys[2])
     I0_int = jnp.maximum(jnp.round(jnp.exp(log_I0)), 1.0).astype(jnp.int64)
-    I_buf = jnp.full((cfg.buffer_len,), I0_int)
-    U_buf = jnp.zeros((cfg.buffer_len,), dtype=jnp.int64)
+    U_buf = jnp.full((cfg.buffer_len,), I0_int)
     return ParticleStateGDM(
-        log_Rt=log_Rt, v_R=v_R, log_F=log_F, v_F=v_F,
-        log_I0=log_I0, I_buf=I_buf, U_buf=U_buf,
+        log_Rt=log_Rt, v_R=v_R,
+        log_I0=log_I0, U_buf=U_buf,
     )
 
 
 def sample_initial_gdm_params(
     key: Array, cfg: ModelConfig, N: int
 ) -> ParticleParamsGDM:
-    keys = jr.split(key, 6)
+    keys = jr.split(key, 4)
     return ParticleParamsGDM(
         log_sigma_vR=cfg.init_log_sigma_vR_mean
         + cfg.init_log_sigma_vR_sd * jr.normal(keys[0], (N,)),
-        log_sigma_vF=cfg.init_log_sigma_vF_mean
-        + cfg.init_log_sigma_vF_sd * jr.normal(keys[1], (N,)),
-        log_mu=cfg.init_log_mu_mean + cfg.init_log_mu_sd * jr.normal(keys[2], (N,)),
-        b_0=cfg.init_b0_mean + cfg.init_b0_sd * jr.normal(keys[3], (N,)),
-        b_1=cfg.init_b1_mean + cfg.init_b1_sd * jr.normal(keys[4], (N,)),
-        log_M=cfg.init_log_M_mean + cfg.init_log_M_sd * jr.normal(keys[5], (N,)),
+        b_0=cfg.init_b0_mean + cfg.init_b0_sd * jr.normal(keys[1], (N,)),
+        b_1=cfg.init_b1_mean + cfg.init_b1_sd * jr.normal(keys[2], (N,)),
+        log_M=cfg.init_log_M_mean + cfg.init_log_M_sd * jr.normal(keys[3], (N,)),
     )

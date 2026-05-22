@@ -114,16 +114,11 @@ def test_propose_step_runs_end_to_end():
     state = ParticleStateGDM(
         log_Rt=jnp.asarray(0.5),
         v_R=jnp.asarray(0.0),
-        log_F=jnp.asarray(-6.0),
-        v_F=jnp.asarray(0.0),
         log_I0=jnp.asarray(1.0),
-        I_buf=jnp.full((L,), 3, dtype=jnp.int64),
         U_buf=jnp.full((L,), 3, dtype=jnp.int64),
     )
     theta = ParticleParamsGDM(
         log_sigma_vR=jnp.asarray(-6.0),
-        log_sigma_vF=jnp.asarray(-9.0),
-        log_mu=jnp.asarray(0.0),
         b_0=jnp.asarray(0.2),
         b_1=jnp.asarray(0.4),
         log_M=jnp.asarray(3.5),
@@ -131,12 +126,10 @@ def test_propose_step_runs_end_to_end():
     y_t = jnp.asarray(5)
     new_state, log_w = propose_step(jr.key(0), state, theta, y_t, cfg)
     assert isinstance(new_state, ParticleStateGDM)
-    assert new_state.I_buf.shape == (L,)
     assert new_state.U_buf.shape == (L,)
     assert np.isfinite(float(log_w)), f"Expected finite log-weight, got {log_w}"
-    # Buffers should be non-negative integer-valued.
+    # Buffer should be non-negative integer-valued.
     assert jnp.all(new_state.U_buf >= 0)
-    assert jnp.all(new_state.I_buf >= 0)
 
 
 def test_forward_step_produces_valid_partition():
@@ -146,16 +139,11 @@ def test_forward_step_produces_valid_partition():
     state = ParticleStateGDM(
         log_Rt=jnp.asarray(0.5),
         v_R=jnp.asarray(0.0),
-        log_F=jnp.asarray(-6.0),
-        v_F=jnp.asarray(0.0),
         log_I0=jnp.asarray(1.0),
-        I_buf=jnp.full((L,), 5, dtype=jnp.int64),
         U_buf=jnp.full((L,), 3, dtype=jnp.int64),
     )
     theta = ParticleParamsGDM(
         log_sigma_vR=jnp.asarray(-6.0),
-        log_sigma_vF=jnp.asarray(-9.0),
-        log_mu=jnp.asarray(0.0),
         b_0=jnp.asarray(0.2),
         b_1=jnp.asarray(0.4),
         log_M=jnp.asarray(3.5),
