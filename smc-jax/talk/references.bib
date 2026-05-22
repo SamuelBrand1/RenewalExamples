@@ -1,0 +1,311 @@
+% Production / operational SMC references for the pyrenew talk.
+% All entries below were verified by a research pass; entries without a
+% DOI are intentional (book chapters, conference proceedings, or DOIs
+% not confirmed).
+
+% ---------------------------------------------------------------------
+% Numerical weather prediction / geophysical data assimilation
+% ---------------------------------------------------------------------
+
+@article{bonavita2015hybrid,
+  author  = {Bonavita, Massimo and Hamrud, Mats and Isaksen, Lars},
+  title   = {{EnKF} and Hybrid Gain Ensemble Data Assimilation. {Part I}:
+             {EnKF} Implementation},
+  journal = {Monthly Weather Review},
+  volume  = {143},
+  number  = {12},
+  pages   = {4847--4864},
+  year    = {2015},
+  doi     = {10.1175/MWR-D-14-00333.1},
+}
+
+@article{kleist2015gfs,
+  author  = {Kleist, Daryl T. and Ide, Kayo},
+  title   = {An {OSSE}-Based Evaluation of Hybrid Variational--Ensemble
+             Data Assimilation for the {NCEP GFS}. {Part I}: System
+             Description and {3D}-Hybrid Results},
+  journal = {Monthly Weather Review},
+  volume  = {143},
+  number  = {2},
+  pages   = {433--451},
+  year    = {2015},
+  doi     = {10.1175/MWR-D-13-00351.1},
+}
+
+@article{clayton2013ukmo,
+  author  = {Clayton, A. M. and Lorenc, A. C. and Barker, D. M.},
+  title   = {Operational implementation of a hybrid ensemble/{4D}-{Var}
+             global data assimilation system at the {Met Office}},
+  journal = {Quarterly Journal of the Royal Meteorological Society},
+  volume  = {139},
+  number  = {675},
+  pages   = {1445--1461},
+  year    = {2013},
+  doi     = {10.1002/qj.2054},
+}
+
+@article{schraff2016kenda,
+  author  = {Schraff, Christoph and Reich, Hendrik and Rhodin, Andreas
+             and Schomburg, Annika and Stephan, Klaus and Peri{\'a}{\~n}ez,
+             {\'A}lvaro and Potthast, Roland},
+  title   = {Kilometre-scale ensemble data assimilation for the {COSMO}
+             model ({KENDA})},
+  journal = {Quarterly Journal of the Royal Meteorological Society},
+  volume  = {142},
+  number  = {696},
+  pages   = {1453--1472},
+  year    = {2016},
+  doi     = {10.1002/qj.2748},
+}
+
+@article{poterjoy2017lpf,
+  author  = {Poterjoy, Jonathan and Sobash, Ryan A. and Anderson,
+             Jeffrey L.},
+  title   = {Convective-Scale Data Assimilation for the {NCEP} Regional
+             Forecast System Using a Local Particle Filter},
+  journal = {Monthly Weather Review},
+  volume  = {145},
+  number  = {12},
+  pages   = {4855--4876},
+  year    = {2017},
+  doi     = {10.1175/MWR-D-16-0298.1},
+}
+
+@article{poterjoy2019lpf,
+  author  = {Poterjoy, Jonathan and Wicker, Louis and Buehner, Mark},
+  title   = {Progress toward the application of a localized particle
+             filter for numerical weather prediction},
+  journal = {Monthly Weather Review},
+  volume  = {147},
+  number  = {4},
+  pages   = {1107--1126},
+  year    = {2019},
+  doi     = {10.1175/MWR-D-17-0344.1},
+}
+
+@article{vanleeuwen2019pfreview,
+  author  = {van Leeuwen, Peter Jan and K{\"u}nsch, Hans R. and Nerger,
+             Lars and Potthast, Roland and Reich, Sebastian},
+  title   = {Particle filters for high-dimensional geoscience
+             applications: a review},
+  journal = {Quarterly Journal of the Royal Meteorological Society},
+  volume  = {145},
+  number  = {723},
+  pages   = {2335--2365},
+  year    = {2019},
+  doi     = {10.1002/qj.3551},
+}
+
+% ---------------------------------------------------------------------
+% Storvik / sufficient-statistics SMC lineage
+% ---------------------------------------------------------------------
+
+@article{storvik2002,
+  author  = {Storvik, Geir},
+  title   = {Particle filters for state-space models with the presence
+             of unknown static parameters},
+  journal = {IEEE Transactions on Signal Processing},
+  volume  = {50},
+  number  = {2},
+  pages   = {281--289},
+  year    = {2002},
+  doi     = {10.1109/78.978383},
+}
+
+@article{fearnhead2002,
+  author  = {Fearnhead, Paul},
+  title   = {{MCMC}, sufficient statistics and particle filters},
+  journal = {Statistics and Computing},
+  volume  = {12},
+  pages   = {219--227},
+  year    = {2002},
+}
+
+@article{polson2008practical,
+  author  = {Polson, Nicholas G. and Stroud, Jonathan R. and M{\"u}ller,
+             Peter},
+  title   = {Practical filtering with sequential parameter learning},
+  journal = {Journal of the Royal Statistical Society: Series B},
+  volume  = {70},
+  number  = {2},
+  pages   = {413--428},
+  year    = {2008},
+  doi     = {10.1111/j.1467-9868.2007.00642.x},
+}
+
+@article{carvalho2010pl,
+  author  = {Carvalho, Carlos M. and Johannes, Michael S. and Lopes,
+             Hedibert F. and Polson, Nicholas G.},
+  title   = {Particle Learning and Smoothing},
+  journal = {Statistical Science},
+  volume  = {25},
+  number  = {1},
+  pages   = {88--106},
+  year    = {2010},
+}
+
+% ---------------------------------------------------------------------
+% Epidemiological SMC — operational and applied
+% ---------------------------------------------------------------------
+
+@article{endo2019pmcmc,
+  author  = {Endo, Akira and van Leeuwen, Edwin and Baguelin, Marc},
+  title   = {Introduction to particle {Markov}-chain {Monte Carlo} for
+             disease dynamics modellers},
+  journal = {Epidemics},
+  volume  = {29},
+  pages   = {100363},
+  year    = {2019},
+  doi     = {10.1016/j.epidem.2019.100363},
+}
+
+@article{funk2018realtime,
+  author  = {Funk, Sebastian and Camacho, Anton and Kucharski, Adam J.
+             and Eggo, Rosalind M. and Edmunds, W. John},
+  title   = {Real-time forecasting of infectious disease dynamics with
+             a stochastic semi-mechanistic model},
+  journal = {Epidemics},
+  volume  = {22},
+  pages   = {56--61},
+  year    = {2018},
+  doi     = {10.1016/j.epidem.2016.11.002},
+}
+
+@article{funk2019ebola,
+  author  = {Funk, Sebastian and Camacho, Anton and Kucharski, Adam J.
+             and Lowe, Rachel and Eggo, Rosalind M. and Edmunds,
+             W. John},
+  title   = {Assessing the performance of real-time epidemic forecasts:
+             {A} case study of {Ebola} in the {Western Area} region of
+             {Sierra Leone}, 2014--15},
+  journal = {PLOS Computational Biology},
+  volume  = {15},
+  number  = {2},
+  pages   = {e1006785},
+  year    = {2019},
+  doi     = {10.1371/journal.pcbi.1006785},
+}
+
+@article{birrell2021covid,
+  author  = {Birrell, Paul and Blake, Joshua and van Leeuwen, Edwin and
+             Gent, Nick and De Angelis, Daniela},
+  title   = {Real-time nowcasting and forecasting of {COVID-19} dynamics
+             in {England}: the first wave},
+  journal = {Philosophical Transactions of the Royal Society B},
+  volume  = {376},
+  pages   = {20200279},
+  year    = {2021},
+  doi     = {10.1098/rstb.2020.0279},
+}
+
+@article{dukic2012flu,
+  author  = {Dukic, Vanja and Lopes, Hedibert F. and Polson, Nicholas G.},
+  title   = {Tracking epidemics with {Google Flu Trends} data and a
+             state-space {SEIR} model},
+  journal = {Journal of the American Statistical Association},
+  volume  = {107},
+  number  = {500},
+  pages   = {1410--1426},
+  year    = {2012},
+  doi     = {10.1080/01621459.2012.713876},
+}
+
+@article{yang2014filterflu,
+  author  = {Yang, Wan and Karspeck, Alicia and Shaman, Jeffrey},
+  title   = {Comparison of filtering methods for the modeling and
+             retrospective forecasting of influenza epidemics},
+  journal = {PLOS Computational Biology},
+  volume  = {10},
+  number  = {4},
+  pages   = {e1003583},
+  year    = {2014},
+  doi     = {10.1371/journal.pcbi.1003583},
+}
+
+% ---------------------------------------------------------------------
+% SMC² and frontiers
+% ---------------------------------------------------------------------
+
+@article{chopin2013smc2,
+  author  = {Chopin, Nicolas and Jacob, Pierre E. and Papaspiliopoulos,
+             Omiros},
+  title   = {{SMC}{$^2$}: an efficient algorithm for sequential analysis
+             of state space models},
+  journal = {Journal of the Royal Statistical Society: Series B},
+  volume  = {75},
+  number  = {3},
+  pages   = {397--426},
+  year    = {2013},
+}
+
+@article{temfack2024esmc2,
+  author  = {Temfack, Donatien and Wyse, Jason},
+  title   = {Efficient sequential {Bayesian} inference for state-space
+             epidemic models using ensemble data assimilation},
+  journal = {arXiv preprint},
+  year    = {2024},
+  eprint  = {2512.05650},
+  archivePrefix = {arXiv},
+}
+
+@article{andrieu2010pmcmc,
+  author  = {Andrieu, Christophe and Doucet, Arnaud and Holenstein,
+             Roman},
+  title   = {Particle {Markov} chain {Monte Carlo} methods},
+  journal = {Journal of the Royal Statistical Society: Series B},
+  volume  = {72},
+  number  = {3},
+  pages   = {269--342},
+  year    = {2010},
+  doi     = {10.1111/j.1467-9868.2009.00736.x},
+}
+
+% ---------------------------------------------------------------------
+% Other heritage — defence, robotics, finance
+% ---------------------------------------------------------------------
+
+@article{gordon1993novel,
+  author  = {Gordon, N. J. and Salmond, D. J. and Smith, A. F. M.},
+  title   = {Novel approach to nonlinear/non-{Gaussian} {Bayesian} state
+             estimation},
+  journal = {IEE Proceedings F (Radar and Signal Processing)},
+  volume  = {140},
+  number  = {2},
+  pages   = {107--113},
+  year    = {1993},
+  doi     = {10.1049/ip-f-2.1993.0015},
+}
+
+@inproceedings{montemerlo2003fastslam2,
+  author    = {Montemerlo, Michael and Thrun, Sebastian and Koller,
+               Daphne and Wegbreit, Ben},
+  title     = {{FastSLAM 2.0}: An improved particle filtering algorithm
+               for simultaneous localization and mapping that provably
+               converges},
+  booktitle = {Proceedings of the 18th International Joint Conference on
+               Artificial Intelligence (IJCAI)},
+  year      = {2003},
+  pages     = {1151--1156},
+}
+
+@article{pitt1999auxiliary,
+  author  = {Pitt, Michael K. and Shephard, Neil},
+  title   = {Filtering via simulation: auxiliary particle filters},
+  journal = {Journal of the American Statistical Association},
+  volume  = {94},
+  number  = {446},
+  pages   = {590--599},
+  year    = {1999},
+  doi     = {10.1080/01621459.1999.10474153},
+}
+
+@incollection{liuwest2001,
+  author    = {Liu, Jane and West, Mike},
+  title     = {Combined parameter and state estimation in
+               simulation-based filtering},
+  booktitle = {Sequential {Monte Carlo} Methods in Practice},
+  editor    = {Doucet, Arnaud and de Freitas, Nando and Gordon, Neil},
+  publisher = {Springer},
+  year      = {2001},
+  pages     = {197--223},
+}
