@@ -8,18 +8,18 @@ from __future__ import annotations
 
 import jax.numpy as jnp
 from jax import Array
-from jax.scipy.special import gammaln
+from numpyro.distributions import Gamma
 
 
 def _discretized_gamma(shape: float, scale: float, support: Array) -> Array:
     """Probability mass on integer points `support` from a Gamma(shape, scale), normalized.
 
-    Uses the unnormalized Gamma density at the integer points and renormalizes.
-    Sufficient for the short PMFs we use here.
+    Evaluates the Gamma density at the integer points and renormalizes.
+    Sufficient for the short PMFs we use here.  numpyro parametrizes Gamma by
+    ``(concentration, rate)``, so ``rate = 1 / scale``.
     """
     x = support.astype(jnp.float32)
-    log_dens = (shape - 1.0) * jnp.log(jnp.maximum(x, 1e-12)) - x / scale - shape * jnp.log(scale) - gammaln(shape)
-    dens = jnp.exp(log_dens)
+    dens = jnp.exp(Gamma(concentration=shape, rate=1.0 / scale).log_prob(x))
     dens = jnp.where(x > 0, dens, 0.0)
     return dens / jnp.sum(dens)
 
