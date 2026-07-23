@@ -1,3 +1,6 @@
 .vscode/settings.json
 *_pycache__/
 .DS_Store
+*.history
+RenewalBirch/.Rhistory
+RenewalBirch/.RData
