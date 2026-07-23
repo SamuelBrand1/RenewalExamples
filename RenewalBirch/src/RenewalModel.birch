@@ -5,7 +5,8 @@
  * Generative structure (EpiNow2 defaults, with the seeding simplification):
  *   - each initial latent infection over the generation-interval window is its
  *     own sampled parameter, centred on the mean of the first week of cases;
- *   - log Rt is a first-difference random walk (drifting step sd), not a GP;
+ *   - log Rt is a differenced random walk (a RW on the first differences of log Rt;
+ *     equivalently a second-order / integrated RW), drifting step sd, not a GP;
  *   - discretised default generation interval and infection->report delay;
  *   - Dirichlet-style day-of-week reporting effect (softmax of 7 logits, x7);
  *   - Negative-Binomial-2 observation with a drifting overdispersion.
@@ -33,13 +34,22 @@ class RenewalModel < Model {
   /* ---- fixed inputs (read from element[0] of the input array) ---- */
   gi_pmf:Real[_];        // generation interval PMF g[1..uot], infection age 1..uot days
   delay_pmf:Real[_];     // infection->report delay PMF d[1..n_delay], delay 0..n_delay-1
-  uot:Integer <- 14;     // seeding window == generation-interval length
+  uot:Integer <- 14;     // seeding window == generation-interval length "uot" means the "unobserved time" of the renewal model
   n_delay:Integer <- 21; // length of the reporting-delay PMF
   I0_guess:Real <- 1.0;  // prior median for seed infections (mean of first week)
   seed_sd:Real <- 1.0;   // log-scale sd of the seed prior
+  logR0_mean:Real <- -0.34657;  // initial log Rt prior mean (= EpiNow2 LogNormal(mean 1, sd 1))
+  logR0_var:Real <- 0.69315;    // initial log Rt prior variance (sdlog^2)
   tau_sr:Real <- 0.03;   // fixed RW jitter sd for log sigma_rw
   tau_phi:Real <- 0.03;  // fixed RW jitter sd for log phi
   tau_dow:Real <- 0.03;  // fixed RW jitter sd for the day-of-week logits
+  /* priors on the static parameters (unconstrained scale). For RW these set the
+     initial spread of the drifting statics; for SMC^2 they are the outer prior. */
+  prior_lsr_mean:Real <- -2.302585;  // log sigma_rw prior mean (log 0.1)
+  prior_lsr_var:Real  <- 0.09;       // log sigma_rw prior var  (0.3^2)
+  prior_lphi_mean:Real <- 2.302585;  // log phi prior mean (log 10)
+  prior_lphi_var:Real  <- 0.49;      // log phi prior var  (0.7^2)
+  prior_dow_var:Real   <- 0.04;      // day-of-week logit prior var (0.2^2), mean 0
 
   /* ---- drifting static-state (unconstrained; rejuvenated each step) ---- */
   ls_rw:Real <- 0.0;     // log sigma_rw
@@ -61,11 +71,12 @@ class RenewalModel < Model {
     for j in 1..uot {
       logI0[j] <~ Gaussian(log(I0_guess), seed_sd*seed_sd);
     }
-    ls_rw <~ Gaussian(log(0.1), 0.3*0.3);        // sigma_rw ~ around 0.1 (EpiNow2 rw sd)
-    lphi  <~ Gaussian(log(10.0), 0.7*0.7);       // phi ~ around 10
+    /* initial spread of the drifting statics = their prior (read from input) */
+    ls_rw <~ Gaussian(prior_lsr_mean, prior_lsr_var);
+    lphi  <~ Gaussian(prior_lphi_mean, prior_lphi_var);
     dow_logit <- vector(0.0, 7);
     for k in 1..7 {
-      dow_logit[k] <~ Gaussian(0.0, 0.2*0.2);    // near-uniform day-of-week
+      dow_logit[k] <~ Gaussian(0.0, prior_dow_var);
     }
   }
 
@@ -74,6 +85,10 @@ class RenewalModel < Model {
     if t <= uot {
       /* seeding window: latent infections are the sampled seeds */
       I[t] <- exp(logI0[t]);
+      if t == uot {
+        /* first log-Rt anchor (level) for the differenced RW */
+        logR[t] <~ Gaussian(logR0_mean, logR0_var);
+      }
     } else {
       /* rejuvenate the drifting statics via a small fixed-variance RW */
       ls_rw <~ Gaussian(ls_rw, tau_sr*tau_sr);
@@ -81,14 +96,15 @@ class RenewalModel < Model {
       for k in 1..7 {
         dow_logit[k] <~ Gaussian(dow_logit[k], tau_dow*tau_dow);
       }
-      /* log Rt: initial prior at the first renewal step, then a difference RW
-         with the current (drifted) step sd. Initial R0 ~ LogNormal(mean 1, sd 1)
-         => meanlog -0.34657, var log 2. */
+      /* log Rt: two anchors from the R0 prior (t = uot, uot+1), then a DIFFERENCED
+         random walk -- a RW on the first differences: Delta logR[t] = Delta logR[t-1]
+         + eps, i.e. mean 2 logR[t-1] - logR[t-2] (a smooth, locally-linear trend;
+         a.k.a. second-order / integrated RW). eps sd = sigma_rw. */
       if t == uot + 1 {
-        logR[t] <~ Gaussian(-0.34657, 0.69315);
+        logR[t] <~ Gaussian(logR0_mean, logR0_var);
       } else {
         let s <- exp(ls_rw);
-        logR[t] <~ Gaussian(logR[t - 1], s*s);
+        logR[t] <~ Gaussian(2.0*logR[t - 1] - logR[t - 2], s*s);
       }
       /* renewal: I_t = R_t * sum_{s=1..uot} g_s I_{t-s}  (single O(uot) step) */
       infness:Real <- 0.0;
@@ -116,7 +132,13 @@ class RenewalModel < Model {
       }
       mu <- mu*7.0*exp(dow_logit[dow_now])/Z;
       mu_obs[t] <- mu;
-      /* NB2 log-likelihood via factor (matches Stan neg_binomial_2(mu, phi)) */
+      /* NB2 log-likelihood via factor (= Stan neg_binomial_2(mu, ph)): a direct
+         log-weight. Deliberately NOT the built-in observe forms -- neither
+         y ~> NegativeBinomial(ph, ph/(ph+mu)) nor the Gamma-Poisson mixture
+         (lambda ~ Gamma(ph, mu/ph); y ~> Poisson(lambda)). Both route through
+         Birch's delayed-sampling / conjugacy marginalisation and are orders of
+         magnitude slower here (~1s -> >40s and non-terminating), even for the
+         genuine Gamma-Poisson conjugacy. The factor has no such overhead. */
       if y_now? {
         let ph <- exp(lphi);
         let yv <- Real(y_now!);
@@ -134,11 +156,19 @@ class RenewalModel < Model {
     n_delay <-? buffer.get<Integer>("n_delay");
     I0_guess <-? buffer.get<Real>("I0_guess");
     seed_sd <-? buffer.get<Real>("seed_sd");
+    logR0_mean <-? buffer.get<Real>("logR0_mean");
+    logR0_var <-? buffer.get<Real>("logR0_var");
     tau_sr <-? buffer.get<Real>("tau_sr");
     tau_phi <-? buffer.get<Real>("tau_phi");
     tau_dow <-? buffer.get<Real>("tau_dow");
+    prior_lsr_mean <-? buffer.get<Real>("prior_lsr_mean");
+    prior_lsr_var <-? buffer.get<Real>("prior_lsr_var");
+    prior_lphi_mean <-? buffer.get<Real>("prior_lphi_mean");
+    prior_lphi_var <-? buffer.get<Real>("prior_lphi_var");
+    prior_dow_var <-? buffer.get<Real>("prior_dow_var");
   }
-
+  
+  /* ---- input per-step ---- */
   override function read(t:Integer, buffer:Buffer) {
     y_now <- buffer.get<Integer>("y");
     dow_now <-? buffer.get<Integer>("dow");

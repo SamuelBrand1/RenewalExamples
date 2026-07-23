@@ -42,11 +42,6 @@ program smc2(input:String <- "input/epinow2_example.json",
              full_cov:Boolean <- false,  // true: full-covariance (Cholesky) proposal;
                                          // false: diagonal only (drops correlations, robust)
              output:String <- "output/smc2.json") {
-  /* prior on theta (variances) */
-  let m_lsr <- log(0.1);  let v_lsr <- 0.3*0.3;   // log sigma_rw
-  let m_lph <- log(10.0); let v_lph <- 0.7*0.7;   // log phi
-  let m_dw  <- 0.0;       let v_dw  <- 0.2*0.2;    // day-of-week logits
-
   /* read data; store per-step buffers for replay (buffers[t+1] = element[t]) */
   let reader <- make_reader(input);
   inputBuffer:Buffer;
@@ -60,6 +55,18 @@ program smc2(input:String <- "input/epinow2_example.json",
     buffers[i] <- it0.next();
   }
   let b0 <- buffers[1];
+
+  /* prior on theta = (log sigma_rw, log phi, day-of-week logits): the outer-loop
+     prior, read from the shared input globals (same values the RW model uses as
+     its initial spread). Day-of-week logit mean is fixed at 0. */
+  m_lsr:Real <- -2.302585;  v_lsr:Real <- 0.09;   // defaults = EpiNow2-ish (log 0.1, 0.3^2)
+  m_lph:Real <-  2.302585;  v_lph:Real <- 0.49;   //            (log 10, 0.7^2)
+  m_dw:Real  <-  0.0;       v_dw:Real  <- 0.04;    //            (0, 0.2^2)
+  m_lsr <-? b0.get<Real>("prior_lsr_mean");
+  v_lsr <-? b0.get<Real>("prior_lsr_var");
+  m_lph <-? b0.get<Real>("prior_lphi_mean");
+  v_lph <-? b0.get<Real>("prior_lphi_var");
+  v_dw  <-? b0.get<Real>("prior_dow_var");
 
   /* ---- initialise theta-particles + inner filters ---- */
   lsr:Real[_] <- vector(0.0, ntheta);
