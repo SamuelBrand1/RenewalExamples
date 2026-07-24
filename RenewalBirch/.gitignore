@@ -1,0 +1,55 @@
+# Birch build artifacts (autotools + libtool + generated C++)
+.deps/
+.libs/
+autom4te.cache/
+m4/
+aclocal.m4
+bootstrap
+bootstrap.log
+compile
+config/config.*
+config.cache
+config.guess*
+config.sub*
+config.log
+config.status
+configure
+configure.ac
+configure.log
+depcomp
+install-sh
+libtool
+ltmain.sh
+Makefile
+Makefile.am
+Makefile.in
+missing
+*.la
+*.lo
+*.o
+*.dylib
+*.so
+*.a
+renewalbirch*.cpp
+renewalbirch*.hpp
+src/**/*.cpp
+src/**/*.hpp
+*~
+.dirstamp
+**/.dirstamp
+
+# generated inputs (regenerate via R/prepare_data.R or epinow_birch())
+input/*.json
+!input/.gitkeep
+
+# run outputs (regenerate via birch sample / birch smc2)
+output/*.json
+output/*.csv
+!output/.gitkeep
+
+# run configs are generated (epinow_birch() / heredoc), not committed
+config/*.json
+!config/.gitkeep
+
+# macOS cruft
+.DS_Store

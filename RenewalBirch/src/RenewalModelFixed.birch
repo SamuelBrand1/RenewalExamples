@@ -1,0 +1,116 @@
+/**
+ * Fixed-theta renewal model for the inner filters of the SMC^2 driver
+ * (src/smc2.birch).
+ *
+ * The static parameters theta = (ls_rw, lphi, dow_logit[1..7]) are plain fields
+ * SET by the SMC^2 driver on the model archetype before the inner filter copies
+ * it -- they are NOT sampled here. simulate() therefore samples only the inner
+ * latents: the seed infections and the log-Rt random walk. The inner particle
+ * filter then estimates the marginal likelihood of the data given this theta,
+ * which the outer SMC^2 layer uses to reweight / move theta-particles.
+ *
+ * Deterministic renewal (same as the RW variant), so no process noise and no
+ * symbolic-expression machinery is needed here.
+ */
+class RenewalModelFixed < Model {
+  /* ---- fixed inputs ---- */
+  gi_pmf:Real[_];
+  delay_pmf:Real[_];
+  uot:Integer <- 14;
+  n_delay:Integer <- 21;
+  I0_guess:Real <- 1.0;
+  seed_sd:Real <- 1.0;
+  logR0_mean:Real <- -0.34657;  // initial log Rt prior mean (set via input)
+  logR0_var:Real <- 0.69315;    // initial log Rt prior variance (sdlog^2)
+
+  /* ---- theta: SET by the SMC^2 driver, not sampled ---- */
+  ls_rw:Real <- log(0.1);           // log sigma_rw
+  lphi:Real <- log(10.0);           // log phi
+  dow_logit:Real[_];                // 7 day-of-week logits
+
+  /* ---- inner latents (filtered) ---- */
+  logI0:Tape<Real>;                 // log seed infections
+  logR:Tape<Real>;                  // log Rt, t > uot
+  I:Tape<Real>;                     // infections
+
+  y_now:Integer?;
+  dow_now:Integer <- 1;
+
+  override function simulate() {
+    /* only the inner latents' initial conditions -- theta is fixed */
+    if length(dow_logit) < 7 {
+      dow_logit <- vector(0.0, 7);  // safety default if driver did not set it
+    }
+    for j in 1..uot {
+      logI0[j] <~ Gaussian(log(I0_guess), seed_sd*seed_sd);
+    }
+  }
+
+  override function simulate(t:Integer) {
+    if t <= uot {
+      I[t] <- min(exp(logI0[t]), 1.0e12);
+      if t == uot {
+        logR[t] <~ Gaussian(logR0_mean, logR0_var);   // first anchor for the differenced RW
+      }
+    } else {
+      if t == uot + 1 {
+        let s <- min(exp(ls_rw), 5.0);
+        logR[t] <~ Gaussian(logR[t - 1], s*s);   // gentle initial slope ~ N(0, sigma_rw^2)
+      } else {
+        let s <- min(exp(ls_rw), 5.0);      // cap step sd: extreme theta must not explode
+        logR[t] <~ Gaussian(2.0*logR[t - 1] - logR[t - 2], s*s);   // differenced RW (RW on first differences)
+      }
+      infness:Real <- 0.0;
+      for s in 1..uot {
+        if t - s >= 1 {
+          infness <- infness + gi_pmf[s]*I[t - s];
+        }
+      }
+      I[t] <- min(exp(logR[t])*infness, 1.0e12);
+    }
+
+    if t > uot {
+      mu:Real <- 0.0;
+      for tau in 0..(n_delay - 1) {
+        if t - tau >= 1 {
+          mu <- mu + delay_pmf[tau + 1]*I[t - tau];
+        }
+      }
+      Z:Real <- 0.0;
+      for k in 1..7 {
+        Z <- Z + exp(dow_logit[k]);
+      }
+      mu <- max(mu*7.0*exp(dow_logit[dow_now])/Z, 1.0e-10);   // keep weights finite
+      /* NB2 log-likelihood via factor (= neg_binomial_2(mu, ph)); direct weight,
+         avoids the delayed-sampling overhead of the built-in NegativeBinomial ~>. */
+      if y_now? {
+        let ph <- min(max(exp(lphi), 1.0e-6), 1.0e8);   // guard extreme theta
+        let yv <- Real(y_now!);
+        factor lgamma(yv + ph) - lgamma(ph) - lgamma(yv + 1.0)
+             + ph*(log(ph) - log(ph + mu)) + yv*(log(mu) - log(ph + mu));
+      }
+    }
+  }
+
+  override function read(buffer:Buffer) {
+    gi_pmf <-? buffer.get<Real[_]>("gi_pmf");
+    delay_pmf <-? buffer.get<Real[_]>("delay_pmf");
+    uot <-? buffer.get<Integer>("uot");
+    n_delay <-? buffer.get<Integer>("n_delay");
+    I0_guess <-? buffer.get<Real>("I0_guess");
+    seed_sd <-? buffer.get<Real>("seed_sd");
+    logR0_mean <-? buffer.get<Real>("logR0_mean");
+    logR0_var <-? buffer.get<Real>("logR0_var");
+  }
+
+  override function read(t:Integer, buffer:Buffer) {
+    y_now <- buffer.get<Integer>("y");
+    dow_now <-? buffer.get<Integer>("dow");
+  }
+
+  override function write(t:Integer, buffer:Buffer) {
+    if t > uot {
+      buffer.set("Rt", exp(logR[t]));
+    }
+  }
+}

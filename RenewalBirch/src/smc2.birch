@@ -1,0 +1,263 @@
+/**
+ * SMC^2 for the renewal model (Chopin, Jacob & Papaspiliopoulos 2013).
+ *
+ * Outer SMC over the static parameters theta = (log sigma_rw, log phi, 7
+ * day-of-week logits); each theta-particle owns an INNER bootstrap particle
+ * filter (RenewalModelFixed) over the states (seeds, log Rt). At each
+ * observation:
+ *   - step every inner filter one step; reweight the theta-particle by the
+ *     inner filter's incremental log marginal likelihood (lnormalize);
+ *   - when the theta-ESS drops below ess_frac*ntheta, resample the
+ *     theta-particles (lazy-copying their inner filters) and PMMH-rejuvenate
+ *     each: propose theta' by random walk, run a FRESH inner filter over the
+ *     data seen so far, accept on the marginal-likelihood + prior ratio.
+ *
+ * Uses only the working bootstrap filter + its lnormalize (no move kernel, no
+ * autodiff). This is the principled online static-parameter inference the RW
+ * variant only approximates.
+ *
+ * The PMMH rejuvenation uses a covariance-preconditioned random-walk proposal:
+ * the empirical covariance of the theta-particle population, scaled by 2.38^2/d,
+ * with a diagonal nugget (move_sd^2) so the Cholesky stays positive-definite even
+ * if the particles collapse.
+ *
+ * Run: birch smc2 --ntheta 200 --nx 64 --output output/smc2.json
+ */
+/* pack theta = (log sigma_rw, log phi, 7 day-of-week logits) into a 9-vector */
+function pack9(a:Real, b:Real, dw:Real[_]) -> Real[_] {
+  r:Real[_] <- vector(0.0, 9);
+  r[1] <- a;
+  r[2] <- b;
+  for k in 1..7 {
+    r[k + 2] <- dw[k];
+  }
+  return r;
+}
+
+program smc2(input:String <- "input/epinow2_example.json",
+             ntheta:Integer <- 200,
+             nx:Integer <- 64,
+             ess_frac:Real <- 0.5,
+             move_sd:Real <- 0.02,   // diagonal nugget sd (positive-definite floor)
+             full_cov:Boolean <- false,  // true: full-covariance (Cholesky) proposal;
+                                         // false: diagonal only (drops correlations, robust)
+             output:String <- "output/smc2.json") {
+  /* read data; store per-step buffers for replay (buffers[t+1] = element[t]) */
+  let reader <- make_reader(input);
+  inputBuffer:Buffer;
+  inputBuffer.setEmptyArray();
+  inputBuffer <- reader.slurp();
+  reader.close();
+  let nsteps <- inputBuffer.size() - 1;
+  buffers:Tape<Buffer>;
+  let it0 <- inputBuffer.walk();
+  for i in 1..(nsteps + 1) {
+    buffers[i] <- it0.next();
+  }
+  let b0 <- buffers[1];
+
+  /* prior on theta = (log sigma_rw, log phi, day-of-week logits): the outer-loop
+     prior, read from the shared input globals (same values the RW model uses as
+     its initial spread). Day-of-week logit mean is fixed at 0. */
+  m_lsr:Real <- -3.0;       v_lsr:Real <- 0.04;   // defaults (log 0.05, 0.2^2)
+  m_lph:Real <-  2.302585;  v_lph:Real <- 0.49;   //            (log 10, 0.7^2)
+  m_dw:Real  <-  0.0;       v_dw:Real  <- 0.04;    //            (0, 0.2^2)
+  m_lsr <-? b0.get<Real>("prior_lsr_mean");
+  v_lsr <-? b0.get<Real>("prior_lsr_var");
+  m_lph <-? b0.get<Real>("prior_lphi_mean");
+  v_lph <-? b0.get<Real>("prior_lphi_var");
+  v_dw  <-? b0.get<Real>("prior_dow_var");
+
+  /* ---- initialise theta-particles + inner filters ---- */
+  lsr:Real[_] <- vector(0.0, ntheta);
+  lph:Real[_] <- vector(0.0, ntheta);
+  dow:Tape<Real[_]>;
+  filters:Tape<ParticleFilter>;
+  logW:Real[_] <- vector(0.0, ntheta);
+  prev:Real[_] <- vector(0.0, ntheta);
+
+  for j in 1..ntheta {
+    lsr[j] <- simulate_gaussian(m_lsr, v_lsr);
+    lph[j] <- simulate_gaussian(m_lph, v_lph);
+    dw:Real[_] <- vector(0.0, 7);
+    for k in 1..7 {
+      dw[k] <- simulate_gaussian(m_dw, v_dw);
+    }
+    dow[j] <- dw;
+
+    let model <- RenewalModelFixed();
+    model.ls_rw <- lsr[j];
+    model.lphi <- lph[j];
+    model.dow_logit <- dw;
+    f:ParticleFilter;
+    f.nparticles <- nx;
+    f.filter(model, b0);
+    filters[j] <- f;
+    prev[j] <- f.lnormalize;
+  }
+
+  /* ---- SMC^2 sweep ---- */
+  let nresample <- 0;
+  for t in 1..nsteps {
+    let b <- buffers[t + 1];
+    parallel for j in 1..ntheta {          // inner filters are independent objects
+      filters[j].filter(t, b, nil);
+      logW[j] <- logW[j] + (filters[j].lnormalize - prev[j]);
+      prev[j] <- filters[j].lnormalize;
+    }
+
+    /* theta-ESS */
+    let lZ <- log_sum_exp(logW);
+    Wn:Real[_] <- vector(0.0, ntheta);
+    ss:Real <- 0.0;
+    for j in 1..ntheta {
+      Wn[j] <- exp(logW[j] - lZ);
+      ss <- ss + Wn[j]*Wn[j];
+    }
+    let ess <- 1.0/ss;
+
+    if ess < ess_frac*ntheta {
+      nresample <- nresample + 1;
+      /* systematic resampling of theta-particles -> 1-based ancestors */
+      anc:Integer[_] <- vector(0, ntheta);
+      let u0 <- simulate_uniform(0.0, 1.0)/Real(ntheta);
+      cum:Real <- Wn[1];
+      ip:Integer <- 1;
+      for j in 1..ntheta {
+        let uj <- u0 + Real(j - 1)/Real(ntheta);
+        while uj > cum && ip < ntheta {
+          ip <- ip + 1;
+          cum <- cum + Wn[ip];
+        }
+        anc[j] <- ip;
+      }
+      /* gather (lazy-copy inner filters) */
+      lsr2:Real[_] <- vector(0.0, ntheta);
+      lph2:Real[_] <- vector(0.0, ntheta);
+      dow2:Tape<Real[_]>;
+      filters2:Tape<ParticleFilter>;
+      for j in 1..ntheta {
+        let a <- anc[j];
+        lsr2[j] <- lsr[a];
+        lph2[j] <- lph[a];
+        dow2[j] <- dow[a];
+        filters2[j] <- copy(filters[a]);
+      }
+      lsr <- lsr2;  lph <- lph2;  dow <- dow2;  filters <- filters2;
+      for j in 1..ntheta {
+        logW[j] <- 0.0;
+        prev[j] <- filters[j].lnormalize;
+      }
+
+      /* adaptive proposal: scale by the empirical covariance of the theta-
+         particles (2.38^2/d, Roberts-Rosenthal) plus a diagonal nugget for
+         positive-definiteness. full_cov uses the Cholesky of the full covariance;
+         the default uses only the diagonal (per-component variances) — dropping
+         the off-diagonal correlations, which often stabilises with few particles. */
+      let d <- 9;
+      let cscale <- 2.38*2.38/Real(d);
+      mu:Real[_] <- vector(0.0, d);
+      for j in 1..ntheta {
+        mu <- mu + pack9(lsr[j], lph[j], dow[j]);
+      }
+      mu <- mu/Real(ntheta);
+      Scov:Real[_,_] <- diagonal(vector(0.0, d));
+      for j in 1..ntheta {
+        let e <- pack9(lsr[j], lph[j], dow[j]) - mu;
+        Scov <- Scov + outer(e);
+      }
+      Scov <- Scov/Real(ntheta - 1);
+      Scov <- 0.5*(Scov + transpose(Scov));                 // symmetrise (FP safety)
+
+      Lc:Real[_,_] <- diagonal(vector(1.0, d));             // full-cov Cholesky factor
+      sdv:Real[_] <- vector(0.0, d);                        // diagonal per-dim sds
+      if full_cov {
+        Lc <- chol(cscale*Scov + diagonal(vector(move_sd*move_sd, d)));
+      } else {
+        for i in 1..d {
+          sdv[i] <- sqrt(cscale*Scov[i, i] + move_sd*move_sd);
+        }
+      }
+
+      /* PMMH rejuvenation: symmetric proposal (full Cholesky or diagonal).
+         Parallel over theta-particles: each runs an independent fresh inner
+         filter and writes only its own index. */
+      parallel for j in 1..ntheta {
+        let z <- standard_gaussian(d);
+        delta:Real[_] <- vector(0.0, d);
+        if full_cov {
+          delta <- trimul(Lc, z);
+        } else {
+          for i in 1..d {
+            delta[i] <- sdv[i]*z[i];
+          }
+        }
+        let prop <- pack9(lsr[j], lph[j], dow[j]) + delta;
+        let lsr_p <- prop[1];
+        let lph_p <- prop[2];
+        dw_p:Real[_] <- vector(0.0, 7);
+        for k in 1..7 {
+          dw_p[k] <- prop[k + 2];
+        }
+
+        /* fresh inner filter for theta' over data 1..t */
+        let mp <- RenewalModelFixed();
+        mp.ls_rw <- lsr_p;  mp.lphi <- lph_p;  mp.dow_logit <- dw_p;
+        fp:ParticleFilter;
+        fp.nparticles <- nx;
+        fp.filter(mp, b0);
+        for tt in 1..t {
+          fp.filter(tt, buffers[tt + 1], nil);
+        }
+
+        let ll_p <- fp.lnormalize;
+        let ll_c <- filters[j].lnormalize;
+        lp_p:Real <- logpdf_gaussian(lsr_p, m_lsr, v_lsr) + logpdf_gaussian(lph_p, m_lph, v_lph);
+        lp_c:Real <- logpdf_gaussian(lsr[j], m_lsr, v_lsr) + logpdf_gaussian(lph[j], m_lph, v_lph);
+        for k in 1..7 {
+          lp_p <- lp_p + logpdf_gaussian(dw_p[k], m_dw, v_dw);
+          lp_c <- lp_c + logpdf_gaussian(dow[j][k], m_dw, v_dw);
+        }
+
+        let log_alpha <- (ll_p - ll_c) + (lp_p - lp_c);
+        let u <- simulate_uniform(0.0, 1.0);
+        if log(u) <= log_alpha {
+          lsr[j] <- lsr_p;  lph[j] <- lph_p;  dow[j] <- dw_p;
+          filters[j] <- fp;
+          prev[j] <- fp.lnormalize;
+        }
+      }
+      stderr.print("  t="); stderr.print(t);
+      stderr.print(" resampled+moved (ESS was "); stderr.print(ess); stderr.print(")\n");
+    }
+  }
+
+  /* ---- output the theta posterior ---- */
+  let lZ <- log_sum_exp(logW);
+  out:Buffer;
+  out.setEmptyArray();
+  for j in 1..ntheta {
+    e:Buffer;
+    e.set("sigma_rw", exp(lsr[j]));
+    e.set("phi", exp(lph[j]));
+    ps:Real[_] <- vector(0.0, 7);
+    zz:Real <- 0.0;
+    for k in 1..7 {
+      zz <- zz + exp(dow[j][k]);
+    }
+    for k in 1..7 {
+      ps[k] <- 7.0*exp(dow[j][k])/zz;
+    }
+    e.set("dow", ps);
+    e.set("weight", exp(logW[j] - lZ));
+    out.push(e);
+  }
+  let writer <- make_writer(output);
+  writer.dump(out);
+  writer.close();
+
+  stderr.print("SMC^2 done: ntheta="); stderr.print(ntheta);
+  stderr.print(" nx="); stderr.print(nx);
+  stderr.print(" resample+move steps="); stderr.print(nresample);
+  stderr.print("\n");
+}

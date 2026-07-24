@@ -1,0 +1,206 @@
+/**
+ * Simplified EpiNow2-style renewal model, written for Birch's Sequential
+ * Monte Carlo.
+ *
+ * Generative structure (EpiNow2 defaults, with the seeding simplification):
+ *   - each initial latent infection over the generation-interval window is its
+ *     own sampled parameter, centred on the mean of the first week of cases;
+ *   - log Rt is a differenced random walk (a RW on the first differences of log Rt;
+ *     equivalently a second-order / integrated RW), drifting step sd, not a GP;
+ *   - discretised default generation interval and infection->report delay;
+ *   - Dirichlet-style day-of-week reporting effect (softmax of 7 logits, x7);
+ *   - Negative-Binomial-2 observation with a drifting overdispersion.
+ *
+ * Static-parameter handling (self-organizing state-space / artificial-parameter
+ * evolution, Kitagawa 1998; Liu-West 2001 without shrinkage): the stock Birch
+ * ParticleSampler importance-samples the statics from the prior, which is
+ * degenerate on a long series (ESS = 1). Instead we promote the static
+ * nuisances to *slowly-drifting states* via a small fixed-variance random walk
+ * on their UNCONSTRAINED domains, so the alive particle filter rejuvenates them
+ * at every resample. Each particle carries its own tiny evolving static-state,
+ * copied on write by Birch's lazy object-copy.
+ *   ls_rw  = log sigma_rw    (RW step sd of log Rt)
+ *   lphi   = log phi         (NB2 overdispersion)
+ *   dow[k] = 7 logits        (day-of-week; softmax*7 keeps the simplex constraint)
+ *
+ * The only genuinely dynamic latent is logR[t]; infections are advanced
+ * incrementally (simulate(t) computes only I[t] as a single O(uot) convolution
+ * over already-stored infections), so the renewal is never re-solved from t = 1.
+ * This bounded backward window (max(uot, n_delay)) is exactly the property that
+ * makes Birch's built-in fixed-lag move kernel (LangevinKernel, nlags) a natural
+ * upgrade over the artificial RW used here.
+ */
+class RenewalModel < Model {
+  /* ---- fixed inputs (read from element[0] of the input array) ---- */
+  gi_pmf:Real[_];        // generation interval PMF g[1..uot], infection age 1..uot days
+  delay_pmf:Real[_];     // infection->report delay PMF d[1..n_delay], delay 0..n_delay-1
+  uot:Integer <- 14;     // seeding window == generation-interval length "uot" means the "unobserved time" of the renewal model
+  n_delay:Integer <- 21; // length of the reporting-delay PMF
+  I0_guess:Real <- 1.0;  // prior median for seed infections (mean of first week)
+  seed_sd:Real <- 1.0;   // log-scale sd of the seed prior
+  logR0_mean:Real <- -0.34657;  // initial log Rt prior mean (= EpiNow2 LogNormal(mean 1, sd 1))
+  logR0_var:Real <- 0.69315;    // initial log Rt prior variance (sdlog^2)
+  tau_sr:Real <- 0.03;   // fixed RW jitter sd for log sigma_rw
+  tau_phi:Real <- 0.03;  // fixed RW jitter sd for log phi
+  tau_dow:Real <- 0.03;  // fixed RW jitter sd for the day-of-week logits
+  /* priors on the static parameters (unconstrained scale). For RW these set the
+     initial spread of the drifting statics; for SMC^2 they are the outer prior. */
+  prior_lsr_mean:Real <- -3.0;       // log sigma_rw prior mean (~ log 0.05; tight for a smooth 2nd-diff)
+  prior_lsr_var:Real  <- 0.04;       // log sigma_rw prior var  (0.2^2)
+  prior_lphi_mean:Real <- 2.302585;  // log phi prior mean (log 10)
+  prior_lphi_var:Real  <- 0.49;      // log phi prior var  (0.7^2)
+  prior_dow_var:Real   <- 0.04;      // day-of-week logit prior var (0.2^2), mean 0
+
+  /* ---- drifting static-state (unconstrained; rejuvenated each step) ---- */
+  ls_rw:Real <- 0.0;     // log sigma_rw
+  lphi:Real <- 0.0;      // log phi
+  dow_logit:Real[_];     // 7 day-of-week logits (softmax * 7 -> effect)
+
+  /* ---- initial-condition state ---- */
+  logI0:Tape<Real>;      // log seed infections, j = 1..uot (drawn once)
+
+  /* ---- series / state ---- */
+  logR:Tape<Real>;       // log Rt, defined for t > uot
+  I:Tape<Real>;          // latent infections, all t
+  mu_obs:Tape<Real>;     // expected reported cases (post day-of-week), t > uot
+  y_now:Integer?;        // current step's observed cases (nil on seeding days)
+  dow_now:Integer <- 1;  // current step's day-of-week index 1..7
+
+  /* ---- parameter model: initial values of the drifting statics + seeds ---- */
+  override function simulate() {
+    for j in 1..uot {
+      logI0[j] <~ Gaussian(log(I0_guess), seed_sd*seed_sd);
+    }
+    /* initial spread of the drifting statics = their prior (read from input) */
+    ls_rw <~ Gaussian(prior_lsr_mean, prior_lsr_var);
+    lphi  <~ Gaussian(prior_lphi_mean, prior_lphi_var);
+    dow_logit <- vector(0.0, 7);
+    for k in 1..7 {
+      dow_logit[k] <~ Gaussian(0.0, prior_dow_var);
+    }
+  }
+
+  /* ---- initial / transition / observation ---- */
+  override function simulate(t:Integer) {
+    if t <= uot {
+      /* seeding window: latent infections are the sampled seeds */
+      I[t] <- min(exp(logI0[t]), 1.0e12);
+      if t == uot {
+        /* first log-Rt anchor (level) for the differenced RW */
+        logR[t] <~ Gaussian(logR0_mean, logR0_var);
+      }
+    } else {
+      /* rejuvenate the drifting statics via a small fixed-variance RW -- FROZEN on
+         steps with no observation: nothing informs the hyperparameter drift there,
+         so it must not wander through data-poor / extrapolation regions. */
+      if y_now? {
+        ls_rw <~ Gaussian(ls_rw, tau_sr*tau_sr);
+        lphi  <~ Gaussian(lphi, tau_phi*tau_phi);
+        for k in 1..7 {
+          dow_logit[k] <~ Gaussian(dow_logit[k], tau_dow*tau_dow);
+        }
+      }
+      /* log Rt: level anchor at t=uot (R0 prior), then a gentle initial slope at
+         t=uot+1 (first innovation ~ N(0, sigma_rw^2), NOT an independent R0 draw --
+         that gave a wildly wide initial slope), then a DIFFERENCED random walk -- a
+         RW on the first differences: Delta logR[t] = Delta logR[t-1] + eps, i.e. mean
+         2 logR[t-1] - logR[t-2] (smooth locally-linear trend; a.k.a. integrated RW). */
+      if t == uot + 1 {
+        let s <- min(exp(ls_rw), 5.0);
+        logR[t] <~ Gaussian(logR[t - 1], s*s);   // gentle initial slope
+      } else {
+        let s <- min(exp(ls_rw), 5.0);
+        logR[t] <~ Gaussian(2.0*logR[t - 1] - logR[t - 2], s*s);
+      }
+      /* renewal: I_t = R_t * sum_{s=1..uot} g_s I_{t-s}  (single O(uot) step) */
+      infness:Real <- 0.0;
+      for s in 1..uot {
+        if t - s >= 1 {
+          infness <- infness + gi_pmf[s]*I[t - s];
+        }
+      }
+      I[t] <- min(exp(logR[t])*infness, 1.0e12);
+    }
+
+    /* observation for reported days (t > uot) */
+    if t > uot {
+      /* expected reports: convolve infections with the delay PMF (delay 0 = d[1]) */
+      mu:Real <- 0.0;
+      for tau in 0..(n_delay - 1) {
+        if t - tau >= 1 {
+          mu <- mu + delay_pmf[tau + 1]*I[t - tau];
+        }
+      }
+      /* day-of-week effect: softmax(logits) * 7 so it averages to 1 */
+      Z:Real <- 0.0;
+      for k in 1..7 {
+        Z <- Z + exp(dow_logit[k]);
+      }
+      mu <- max(mu*7.0*exp(dow_logit[dow_now])/Z, 1.0e-10);
+      mu_obs[t] <- mu;
+      /* NB2 log-likelihood via factor (= Stan neg_binomial_2(mu, ph)): a direct
+         log-weight. Deliberately NOT the built-in observe forms -- neither
+         y ~> NegativeBinomial(ph, ph/(ph+mu)) nor the Gamma-Poisson mixture
+         (lambda ~ Gamma(ph, mu/ph); y ~> Poisson(lambda)). Both route through
+         Birch's delayed-sampling / conjugacy marginalisation and are orders of
+         magnitude slower here (~1s -> >40s and non-terminating), even for the
+         genuine Gamma-Poisson conjugacy. The factor has no such overhead. */
+      if y_now? {
+        let ph <- min(max(exp(lphi), 1.0e-6), 1.0e8);
+        let yv <- Real(y_now!);
+        factor lgamma(yv + ph) - lgamma(ph) - lgamma(yv + 1.0)
+             + ph*(log(ph) - log(ph + mu)) + yv*(log(mu) - log(ph + mu));
+      }
+    }
+  }
+
+  /* ---- input ---- */
+  override function read(buffer:Buffer) {
+    gi_pmf <-? buffer.get<Real[_]>("gi_pmf");
+    delay_pmf <-? buffer.get<Real[_]>("delay_pmf");
+    uot <-? buffer.get<Integer>("uot");
+    n_delay <-? buffer.get<Integer>("n_delay");
+    I0_guess <-? buffer.get<Real>("I0_guess");
+    seed_sd <-? buffer.get<Real>("seed_sd");
+    logR0_mean <-? buffer.get<Real>("logR0_mean");
+    logR0_var <-? buffer.get<Real>("logR0_var");
+    tau_sr <-? buffer.get<Real>("tau_sr");
+    tau_phi <-? buffer.get<Real>("tau_phi");
+    tau_dow <-? buffer.get<Real>("tau_dow");
+    prior_lsr_mean <-? buffer.get<Real>("prior_lsr_mean");
+    prior_lsr_var <-? buffer.get<Real>("prior_lsr_var");
+    prior_lphi_mean <-? buffer.get<Real>("prior_lphi_mean");
+    prior_lphi_var <-? buffer.get<Real>("prior_lphi_var");
+    prior_dow_var <-? buffer.get<Real>("prior_dow_var");
+  }
+  
+  /* ---- input per-step ---- */
+  override function read(t:Integer, buffer:Buffer) {
+    y_now <- buffer.get<Integer>("y");
+    dow_now <-? buffer.get<Integer>("dow");
+  }
+
+  /* ---- output ---- */
+  override function write(buffer:Buffer) {
+    /* final-time day-of-week simplex (softmax of the drifted logits) */
+    p:Real[_] <- vector(0.0, 7);
+    Z:Real <- 0.0;
+    for k in 1..7 {
+      Z <- Z + exp(dow_logit[k]);
+    }
+    for k in 1..7 {
+      p[k] <- exp(dow_logit[k])/Z;
+    }
+    buffer.set("p", p);
+  }
+
+  override function write(t:Integer, buffer:Buffer) {
+    buffer.set("I", I[t]);
+    if t > uot {
+      buffer.set("Rt", exp(logR[t]));
+      buffer.set("mu", mu_obs[t]);
+      buffer.set("sigma_rw", exp(ls_rw));
+      buffer.set("phi", exp(lphi));
+    }
+  }
+}

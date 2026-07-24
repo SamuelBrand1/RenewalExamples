@@ -1,0 +1,20 @@
+name: RenewalBirch
+description: >-
+  Simplified EpiNow2-style renewal model run with Birch's Sequential Monte
+  Carlo: a first-difference random walk on log Rt (sampled step sd), a
+  discretised default generation interval and infection-to-report delay, a
+  Dirichlet day-of-week reporting effect scaled to average one, and a
+  Negative-Binomial-2 observation with sampled overdispersion. Fit to the
+  EpiNow2 example_confirmed case series.
+version: 0.0.0
+manifest:
+  source:
+    - src/*.birch
+  other:
+    - birch.yml
+    - README.md
+    - demo.R
+    - R/*.R
+require:
+  package:
+    - Birch.Standard
