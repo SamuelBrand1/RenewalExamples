@@ -105,7 +105,7 @@ birch sample --config config/renewal.json         # RW fit -> output/renewal.jso
 Rscript R/plot_results.R output/renewal.json rw   # -> figures/{rt,infections,pp}_rw.png
 
 # SMC² — proper static-parameter posterior (custom program, no config):
-birch smc2 --ntheta 100 --nx 100 --output output/smc2.json    # nx scales with series length
+birch smc2 --ntheta 100 --nx 100 --nmoves 5 --output output/smc2.json   # nmoves = PMMH chain length
 Rscript R/plot_smc2.R output/smc2.json output/renewal.json   # -> figures/smc2_posterior.png
 
 # optional: EpiNow2 (Stan) reference Rt to overlay (slow, minutes):
@@ -146,6 +146,12 @@ The fresh run of the inner filters is what makes SMC² slower than the fully on-
 By default the MH proposal uses only the per-component variances (`full_cov = false`); dropping the noisy off-diagonal correlations stabilises the move at modest particle counts, while
 `full_cov = true` uses the full Cholesky.
 Mixing hinges on `nx` (inner particles): the inner log-likelihood variance grows with `t`, so too-small `nx` gives noisy ML estimates → low PMMH acceptance → particle collapse; `nx` should scale with the series length (see growing-`Nx` under Possible directions).
+
+**Rejuvenation needs a sequence of MH moves, not just a single move (`nmoves`).**
+With only one PMMH step per resample-move the θ-particles can impoverish badly, the reason is that a resample makes many copies of whichever particle drew a high likelihood, perhaps by chance, every copy inherits the *same frozen* stored estimate `ll_c`, and a single fresh proposal rarely beats a lucky-high value, therefore all copies reject and stay collapsed.
+Empirically this has the same degeneracy problems as not rejuvenating the static parameters with few **unique θs in the filter**.
+Bumping `nx` alone does not neccesarily fix this because it shrinks the estimate noise but does nothing about a *stale* lucky-high weight.
+The fix is a fixed **`nmoves`-step MH chain** per rejuvenation (default 5): each step is an ordinary accept/reject, but on the *first* acceptance the particle's `filters[j]`/`ll_c` is refreshed to a non-lucky estimate, so the rest of the chain compares against *that* and the stuck copies escape.
 
 ## The model
 
@@ -212,9 +218,13 @@ trajectories by it. `R/plot_results.R` pools them with equal weight.
   single-threaded on an M-series Mac. Smooth posterior Rt (≈2 in early March,
   crossing 1 in late March, ≈0.85 through spring, rising in June) with 50 %/90 %
   bands, `σ_rw ≈ 0.04`, `φ ≈ 6`.
-- **SMC²** (`ntheta = 100`, `nx = 100`): ~5 min; sharp unimodal θ posterior
-  centred on the RW-engine values (`σ_rw ≈ 0.04`, `φ ≈ 8`), tighter than the RW
-  engine's. (At `nx = 40` the posterior collapses — the growing-`Nx` issue.)
+- **SMC²** (`ntheta = 100`, `nx = 100`, `nmoves = 5`): ~20 min; clean unimodal θ
+  posterior centred on the RW-engine values (`σ_rw ≈ 0.037` [0.030, 0.045],
+  `φ ≈ 10` [8.2, 11.8]), tighter than the RW engine's, with θ-ESS ≈ 68 and ~29
+  unique θ. With `nmoves = 1` the θ-particles impoverish (~8 unique, 58–77 % on one
+  value, needle-spike KDE) and the estimate wobbles run-to-run — see the
+  rejuvenation-chain note above. Bumping `nx` alone (100 → 200, ~12.5 min) does
+  *not* fix it; the fixed MH chain does.
 
 See `figures/`.
 
