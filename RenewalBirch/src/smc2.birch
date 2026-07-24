@@ -19,9 +19,14 @@
  * The PMMH rejuvenation uses a covariance-preconditioned random-walk proposal:
  * the empirical covariance of the theta-particle population, scaled by 2.38^2/d,
  * with a diagonal nugget (move_sd^2) so the Cholesky stays positive-definite even
- * if the particles collapse.
+ * if the particles collapse. Each rejuvenation runs a fixed nmoves-step MH chain
+ * per particle: one step per rejuvenation impoverishes badly here (after a resample
+ * the many copies of a lucky-high-likelihood particle all reject and stay collapsed
+ * -- ~8 unique theta/100 with 58-77% on one value); a 5-step chain refreshes the
+ * stored likelihood on the first acceptance and recovers proper diversity (~29
+ * unique, theta-ESS ~68). See the README impoverishment note.
  *
- * Run: birch smc2 --ntheta 200 --nx 64 --output output/smc2.json
+ * Run: birch smc2 --ntheta 100 --nx 100 --nmoves 5 --output output/smc2.json
  */
 /* pack theta = (log sigma_rw, log phi, 7 day-of-week logits) into a 9-vector */
 function pack9(a:Real, b:Real, dw:Real[_]) -> Real[_] {
@@ -41,6 +46,12 @@ program smc2(input:String <- "input/epinow2_example.json",
              move_sd:Real <- 0.02,   // diagonal nugget sd (positive-definite floor)
              full_cov:Boolean <- false,  // true: full-covariance (Cholesky) proposal;
                                          // false: diagonal only (drops correlations, robust)
+             nmoves:Integer <- 5,    // PMMH steps per rejuvenation (a chain: each is a valid,
+                                     // pi-invariant MH step; on acceptance ll_c is refreshed, so
+                                     // the chain escapes a lucky-high stored likelihood and cures
+                                     // the post-resample impoverishment. NOT "loop until accept" --
+                                     // that stop-on-accept rule strips MH's rejection self-mass and
+                                     // biases the theta-posterior toward the tails, so it is fixed-K.)
              output:String <- "output/smc2.json") {
   /* read data; store per-step buffers for replay (buffers[t+1] = element[t]) */
   let reader <- make_reader(input);
@@ -181,50 +192,56 @@ program smc2(input:String <- "input/epinow2_example.json",
 
       /* PMMH rejuvenation: symmetric proposal (full Cholesky or diagonal).
          Parallel over theta-particles: each runs an independent fresh inner
-         filter and writes only its own index. */
+         filter and writes only its own index. Each particle runs a fixed
+         nmoves-step MH *chain* (not "loop until accept" -- see the arg comment):
+         after an accepted step lsr[j]/lph[j]/dow[j] and filters[j] are updated,
+         so the next step in the chain proposes from, and compares against, the
+         refreshed state -- letting a stuck copy escape a lucky-high ll_c. */
       parallel for j in 1..ntheta {
-        let z <- standard_gaussian(d);
-        delta:Real[_] <- vector(0.0, d);
-        if full_cov {
-          delta <- trimul(Lc, z);
-        } else {
-          for i in 1..d {
-            delta[i] <- sdv[i]*z[i];
+        for m in 1..nmoves {
+          let z <- standard_gaussian(d);
+          delta:Real[_] <- vector(0.0, d);
+          if full_cov {
+            delta <- trimul(Lc, z);
+          } else {
+            for i in 1..d {
+              delta[i] <- sdv[i]*z[i];
+            }
           }
-        }
-        let prop <- pack9(lsr[j], lph[j], dow[j]) + delta;
-        let lsr_p <- prop[1];
-        let lph_p <- prop[2];
-        dw_p:Real[_] <- vector(0.0, 7);
-        for k in 1..7 {
-          dw_p[k] <- prop[k + 2];
-        }
+          let prop <- pack9(lsr[j], lph[j], dow[j]) + delta;
+          let lsr_p <- prop[1];
+          let lph_p <- prop[2];
+          dw_p:Real[_] <- vector(0.0, 7);
+          for k in 1..7 {
+            dw_p[k] <- prop[k + 2];
+          }
 
-        /* fresh inner filter for theta' over data 1..t */
-        let mp <- RenewalModelFixed();
-        mp.ls_rw <- lsr_p;  mp.lphi <- lph_p;  mp.dow_logit <- dw_p;
-        fp:ParticleFilter;
-        fp.nparticles <- nx;
-        fp.filter(mp, b0);
-        for tt in 1..t {
-          fp.filter(tt, buffers[tt + 1], nil);
-        }
+          /* fresh inner filter for theta' over data 1..t */
+          let mp <- RenewalModelFixed();
+          mp.ls_rw <- lsr_p;  mp.lphi <- lph_p;  mp.dow_logit <- dw_p;
+          fp:ParticleFilter;
+          fp.nparticles <- nx;
+          fp.filter(mp, b0);
+          for tt in 1..t {
+            fp.filter(tt, buffers[tt + 1], nil);
+          }
 
-        let ll_p <- fp.lnormalize;
-        let ll_c <- filters[j].lnormalize;
-        lp_p:Real <- logpdf_gaussian(lsr_p, m_lsr, v_lsr) + logpdf_gaussian(lph_p, m_lph, v_lph);
-        lp_c:Real <- logpdf_gaussian(lsr[j], m_lsr, v_lsr) + logpdf_gaussian(lph[j], m_lph, v_lph);
-        for k in 1..7 {
-          lp_p <- lp_p + logpdf_gaussian(dw_p[k], m_dw, v_dw);
-          lp_c <- lp_c + logpdf_gaussian(dow[j][k], m_dw, v_dw);
-        }
+          let ll_p <- fp.lnormalize;
+          let ll_c <- filters[j].lnormalize;
+          lp_p:Real <- logpdf_gaussian(lsr_p, m_lsr, v_lsr) + logpdf_gaussian(lph_p, m_lph, v_lph);
+          lp_c:Real <- logpdf_gaussian(lsr[j], m_lsr, v_lsr) + logpdf_gaussian(lph[j], m_lph, v_lph);
+          for k in 1..7 {
+            lp_p <- lp_p + logpdf_gaussian(dw_p[k], m_dw, v_dw);
+            lp_c <- lp_c + logpdf_gaussian(dow[j][k], m_dw, v_dw);
+          }
 
-        let log_alpha <- (ll_p - ll_c) + (lp_p - lp_c);
-        let u <- simulate_uniform(0.0, 1.0);
-        if log(u) <= log_alpha {
-          lsr[j] <- lsr_p;  lph[j] <- lph_p;  dow[j] <- dw_p;
-          filters[j] <- fp;
-          prev[j] <- fp.lnormalize;
+          let log_alpha <- (ll_p - ll_c) + (lp_p - lp_c);
+          let u <- simulate_uniform(0.0, 1.0);
+          if log(u) <= log_alpha {
+            lsr[j] <- lsr_p;  lph[j] <- lph_p;  dow[j] <- dw_p;
+            filters[j] <- fp;
+            prev[j] <- fp.lnormalize;
+          }
         }
       }
       stderr.print("  t="); stderr.print(t);

@@ -79,6 +79,7 @@ fit <- epinow_birch(
   method = "smc2",
   ntheta = 100,
   nx = 100,
+  nmoves = 5, # fixed PMMH chain per rejuvenation (1 impoverishes the theta-particles)
   nparticles = 256,
   nsamples = 80,
   verbose = TRUE

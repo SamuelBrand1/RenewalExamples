@@ -155,6 +155,7 @@ epinow_birch <- function(
   nsamples = 200, # RW / bootstrap PF
   ntheta = 100,
   nx = 100,
+  nmoves = 5, # SMC^2 PMMH steps per rejuvenation (fixed chain; 1 impoverishes)
   move_sd = 0.02, # SMC^2 (nx scales with T)
   seed_sd = 1.0,
   rw_sd = 0.03,
@@ -242,9 +243,10 @@ epinow_birch <- function(
   } else {
     # smc2 -> theta posterior only (trajectory output is a documented next step)
     say(sprintf(
-      "[epinow_birch] running SMC^2 (ntheta=%d, nx=%d)...\n",
+      "[epinow_birch] running SMC^2 (ntheta=%d, nx=%d, nmoves=%d)...\n",
       ntheta,
-      nx
+      nx,
+      nmoves
     ))
     unlink("output/smc2.json") # Birch's writer does not truncate; start from a clean file
     system2(
@@ -255,7 +257,9 @@ epinow_birch <- function(
         ntheta,
         "--nx",
         nx,
-        "--move-sd",   # Birch converts underscores to hyphens in program-arg flags
+        "--nmoves", # fixed MH chain per rejuvenation; 1 impoverishes the theta-particles
+        nmoves,
+        "--move-sd", # Birch converts underscores to hyphens in program-arg flags
         move_sd,
         "--output",
         "output/smc2.json"
