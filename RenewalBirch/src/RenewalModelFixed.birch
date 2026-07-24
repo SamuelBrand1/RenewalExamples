@@ -54,7 +54,8 @@ class RenewalModelFixed < Model {
       }
     } else {
       if t == uot + 1 {
-        logR[t] <~ Gaussian(logR0_mean, logR0_var);
+        let s <- min(exp(ls_rw), 5.0);
+        logR[t] <~ Gaussian(logR[t - 1], s*s);   // gentle initial slope ~ N(0, sigma_rw^2)
       } else {
         let s <- min(exp(ls_rw), 5.0);      // cap step sd: extreme theta must not explode
         logR[t] <~ Gaussian(2.0*logR[t - 1] - logR[t - 2], s*s);   // differenced RW (RW on first differences)

@@ -59,7 +59,7 @@ program smc2(input:String <- "input/epinow2_example.json",
   /* prior on theta = (log sigma_rw, log phi, day-of-week logits): the outer-loop
      prior, read from the shared input globals (same values the RW model uses as
      its initial spread). Day-of-week logit mean is fixed at 0. */
-  m_lsr:Real <- -2.302585;  v_lsr:Real <- 0.09;   // defaults = EpiNow2-ish (log 0.1, 0.3^2)
+  m_lsr:Real <- -3.0;       v_lsr:Real <- 0.04;   // defaults (log 0.05, 0.2^2)
   m_lph:Real <-  2.302585;  v_lph:Real <- 0.49;   //            (log 10, 0.7^2)
   m_dw:Real  <-  0.0;       v_dw:Real  <- 0.04;    //            (0, 0.2^2)
   m_lsr <-? b0.get<Real>("prior_lsr_mean");

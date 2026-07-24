@@ -37,6 +37,17 @@ here <- function(...) file.path(ROOT, ...)
 UOT <- 14L # seeding window == generation-interval length
 N_DELAY <- 21L # length of the infection->report delay PMF
 SEED_SD <- 1.0 # log-scale sd of the seed prior
+# initial R0 prior: EpiNow2 LogNormal(mean, sd) -> Normal(meanlog, sdlog^2) on log Rt[1]
+R0_MEAN <- 1
+R0_SD <- 1
+R0_VAR <- log(1 + (R0_SD / R0_MEAN)^2)
+R0_MEANLOG <- log(R0_MEAN) - 0.5 * R0_VAR
+# static-parameter priors (log scale): initial spread (RW) / outer prior (SMC^2)
+PRIOR_LSR_MEAN <- log(0.05)
+PRIOR_LSR_VAR <- 0.2^2
+PRIOR_LPHI_MEAN <- log(10)
+PRIOR_LPHI_VAR <- 0.7^2
+PRIOR_DOW_VAR <- 0.2^2
 
 # ---- discretisation helpers (difference-of-CDF, renormalised) ----
 discretise_gamma <- function(mean, sd, max_day) {
@@ -98,7 +109,14 @@ globals <- list(
   uot = UOT,
   n_delay = N_DELAY,
   I0_guess = I0_guess,
-  seed_sd = SEED_SD
+  seed_sd = SEED_SD,
+  logR0_mean = R0_MEANLOG,
+  logR0_var = R0_VAR,
+  prior_lsr_mean = PRIOR_LSR_MEAN,
+  prior_lsr_var = PRIOR_LSR_VAR,
+  prior_lphi_mean = PRIOR_LPHI_MEAN,
+  prior_lphi_var = PRIOR_LPHI_VAR,
+  prior_dow_var = PRIOR_DOW_VAR
 )
 
 seeding_steps <- replicate(UOT, empty_obj, simplify = FALSE)

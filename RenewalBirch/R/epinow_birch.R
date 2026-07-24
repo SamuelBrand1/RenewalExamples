@@ -35,6 +35,11 @@ build_birch_input <- function(
   data,
   generation_time,
   delays,
+  rt_prior = c(mean = 1, sd = 1), # initial R0 prior (natural scale, as EpiNow2 rt_opts)
+  # priors on the (log-scale) static parameters -- initial spread for RW, outer prior for SMC^2:
+  sigma_rw_prior = c(meanlog = log(0.05), sd = 0.2), # log sigma_rw (RW step sd of log Rt)
+  phi_prior = c(meanlog = log(10), sd = 0.7), # log phi (NB2 overdispersion)
+  dow_prior_sd = 0.2, # day-of-week logit sd (mean 0)
   seed_sd = 1.0,
   rw_sd = 0.03,
   dir = "."
@@ -43,6 +48,10 @@ build_birch_input <- function(
   delay_pmf <- spec_to_pmf(delays)
   uot <- length(gi_pmf) # seeding window == generation-interval length
   n_delay <- length(delay_pmf)
+
+  # LogNormal(mean, sd) on R0 -> Normal(meanlog, sdlog^2) on log Rt[1]
+  r0_v <- log(1 + (rt_prior[["sd"]] / rt_prior[["mean"]])^2)
+  r0_meanlog <- log(rt_prior[["mean"]]) - 0.5 * r0_v
 
   y <- as.integer(data$confirm)
   dates <- as.Date(data$date)
@@ -56,6 +65,13 @@ build_birch_input <- function(
     n_delay = n_delay,
     I0_guess = max(1, mean(head(y, 7))),
     seed_sd = seed_sd,
+    logR0_mean = r0_meanlog,
+    logR0_var = r0_v,
+    prior_lsr_mean = sigma_rw_prior[["meanlog"]],
+    prior_lsr_var = sigma_rw_prior[["sd"]]^2,
+    prior_lphi_mean = phi_prior[["meanlog"]],
+    prior_lphi_var = phi_prior[["sd"]]^2,
+    prior_dow_var = dow_prior_sd^2,
     tau_sr = rw_sd,
     tau_phi = rw_sd,
     tau_dow = rw_sd
@@ -130,6 +146,10 @@ epinow_birch <- function(
   delays = EpiNow2::example_incubation_period +
     EpiNow2::example_reporting_delay,
   obs = EpiNow2::obs_opts(),
+  rt_prior = c(mean = 1, sd = 1), # initial R0 prior (EpiNow2 rt_opts default)
+  sigma_rw_prior = c(meanlog = log(0.05), sd = 0.2), # static-param priors (log scale):
+  phi_prior = c(meanlog = log(10), sd = 0.7), #   initial spread (RW) / outer prior (SMC^2)
+  dow_prior_sd = 0.2,
   method = c("rw", "smc2"),
   nparticles = 512,
   nsamples = 200, # RW / bootstrap PF
@@ -150,7 +170,18 @@ epinow_birch <- function(
   dir.create("config", showWarnings = FALSE)
   dir.create("output", showWarnings = FALSE)
 
-  dims <- build_birch_input(data, generation_time, delays, seed_sd, rw_sd, ".")
+  dims <- build_birch_input(
+    data,
+    generation_time,
+    delays,
+    rt_prior = rt_prior,
+    sigma_rw_prior = sigma_rw_prior,
+    phi_prior = phi_prior,
+    dow_prior_sd = dow_prior_sd,
+    seed_sd = seed_sd,
+    rw_sd = rw_sd,
+    dir = "."
+  )
   say(sprintf(
     "[epinow_birch] gi length %d, delay length %d, %d obs; method=%s\n",
     dims$uot,
@@ -168,6 +199,7 @@ epinow_birch <- function(
       output = "output/renewal.json"
     )
     write_json(cfg, "config/_epinow_birch.json", auto_unbox = TRUE)
+    unlink("output/renewal.json") # Birch's writer does not truncate; start from a clean file
     say(
       "[epinow_birch] running Birch alive-PF (this can take a few minutes)...\n"
     )
@@ -214,6 +246,7 @@ epinow_birch <- function(
       ntheta,
       nx
     ))
+    unlink("output/smc2.json") # Birch's writer does not truncate; start from a clean file
     system2(
       "birch",
       c(
@@ -222,7 +255,7 @@ epinow_birch <- function(
         ntheta,
         "--nx",
         nx,
-        "--move_sd",
+        "--move-sd",   # Birch converts underscores to hyphens in program-arg flags
         move_sd,
         "--output",
         "output/smc2.json"

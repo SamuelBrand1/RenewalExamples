@@ -68,7 +68,7 @@ cat(
   " days) with the SAME distribution specs epinow() would use,\n",
   sep = ""
 )
-cat("but with a self-organizing-RW alive particle filter instead of Stan.\n\n")
+cat("but with a Birch particle-filter SMC engine instead of Stan.\n\n")
 
 t0 <- proc.time()[["elapsed"]]
 fit <- epinow_birch(
@@ -76,7 +76,9 @@ fit <- epinow_birch(
   generation_time = EpiNow2::example_generation_time, # discretised via EpiNow2
   delays = EpiNow2::example_incubation_period + #   discretise()/get_pmf()
     EpiNow2::example_reporting_delay,
-  method = "rw",
+  method = "smc2",
+  ntheta = 100,
+  nx = 100,
   nparticles = 256,
   nsamples = 80,
   verbose = TRUE
@@ -86,25 +88,59 @@ cat(sprintf(
   proc.time()[["elapsed"]] - t0
 ))
 
-# peek at EpiNow2's summarised table (the exact structure estimate_infections() returns)
-cat(
-  "\nEpiNow2-format summary (calc_summary_measures output), R around the peak:\n"
-)
-sm <- fit$summarised
-print(head(sm[variable == "R", c("date", "median", "lower_90", "upper_90")], 5))
-
-# render EpiNow2's own plots (plot_estimates) of the Birch results
-fig <- plot(fit)
-ggsave(
-  file.path(ROOT, "figures", "epinow_birch_demo.png"),
-  fig,
-  width = 8,
-  height = 9,
-  dpi = 120
-)
-cat("\nWrote figures/epinow_birch_demo.png — the familiar EpiNow2 panel,\n")
-cat("computed by Birch's particle filter.\n\n")
-cat("Try method = \"smc2\" for the nested-SMC static-parameter posterior:\n")
-cat(
-  "  epinow_birch(EpiNow2::example_confirmed, method = \"smc2\", ntheta = 100, nx = 100)\n\n"
-)
+# report + plot, branching on which engine ran
+if (!is.null(fit$summarised)) {
+  # RW engine: EpiNow2-format summarised table + plot_estimates panel
+  cat(
+    "\nEpiNow2-format summary (calc_summary_measures output), R around the peak:\n"
+  )
+  sm <- fit$summarised
+  print(head(
+    sm[variable == "R", c("date", "median", "lower_90", "upper_90")],
+    5
+  ))
+  fig <- plot(fit)
+  ggsave(
+    file.path(ROOT, "figures", "epinow_birch_demo.png"),
+    fig,
+    width = 8,
+    height = 9,
+    dpi = 120
+  )
+  cat("\nWrote figures/epinow_birch_demo.png — the familiar EpiNow2 panel,\n")
+  cat("computed by Birch's particle filter.\n\n")
+} else {
+  # SMC^2 engine: static-parameter (theta) posterior -- no Rt trajectories
+  th <- fit$theta
+  w <- th$weight / sum(th$weight)
+  cat("\nSMC^2 static-parameter posterior (theta):\n")
+  cat(sprintf(
+    "  sigma_rw:  mean %.3f  range [%.3f, %.3f]\n",
+    sum(w * th$sigma_rw),
+    min(th$sigma_rw),
+    max(th$sigma_rw)
+  ))
+  cat(sprintf(
+    "  phi:       mean %.2f  range [%.2f, %.2f]\n",
+    sum(w * th$phi),
+    min(th$phi),
+    max(th$phi)
+  ))
+  fig <- plot(fit)
+  ggsave(
+    file.path(ROOT, "figures", "epinow_birch_smc2_demo.png"),
+    fig,
+    width = 8,
+    height = 5,
+    dpi = 120
+  )
+  cat(
+    "\nWrote figures/epinow_birch_smc2_demo.png — the theta posterior from SMC^2.\n"
+  )
+  cat(
+    "(SMC^2 returns the static-parameter posterior; routing its state trajectories\n"
+  )
+  cat(
+    " into the EpiNow2 Rt/infections/reported-cases plots is a documented next step.)\n\n"
+  )
+}
