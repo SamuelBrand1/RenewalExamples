@@ -4,7 +4,7 @@ The idea of this example is to try out the particle filter approach given by the
 The example here is a simplified [EpiNow2](https://epiforecasts.io/EpiNow2/)-style renewal model
 where I've attempted to redirect the `EpiNow2` data processing front and plotting back around a call to a `birch` program which does the SMC inference; essentially, this aims to slot `birch` into the slot where 
 `stan` lives.
-The point is to exercise Birch's SMC machinery: the alive particle filter, delayed sampling, and
+The point is to exercise Birch's SMC machinery: the alive particle filter and
 Murray's lazy object-copy substrate on a realistic epi model.
 I've added an `epinow_birch()` front-end that drops Birch-SMC into the compute slot but otherwise aims to reuse the other functions that `epinow()` entrypoint function uses under the hood.
 
@@ -126,7 +126,7 @@ The static parameters are promoted to *slowly-drifting states* via a small fixed
 `ls_rw = log σ_rw`, `lphi = log φ`, and 7 day-of-week logits each drift with a fixed jitter `τ ≈ 0.03`.
 Each particle carries its own tiny evolving static-state, copied on write by Birch's lazy object-copy. Infections stay deterministic and are advanced incrementally.
 The `birch` computation model means that `simulate(t)` computes only `I[t]` as one `O(uot)` convolution.
-It never re-solves from `t=1`, so this is a fully on-line and restartable inference approach.
+It never re-solves from `t=1`, so this is a fully on-line inference approach (and restartable in principle, though Birch has no built-in restart yet — see the anchor-init note under Notes).
 
 **2. `smc2` — SMC² (proper static-parameter inference).**
 `src/smc2.birch` is a custom Birch program implementing SMC² (Chopin, Jacob &
@@ -141,7 +141,7 @@ Each *inner* particle filter is associated with a θ-particle (`RenewalModelFixe
 At each observation every inner filter steps once, which increments their log-weight and therefore the log-weight of their θ-particle.
 When resampling-move in the outer filter occurs the θ-particles are resampled (lazy-copying their inner filters) and **PMMH-rejuvenated** with the MH move which runs a fresh inner filter over the data
 so far.
-The fresh run of the inner filters is what makes SMC² slower than the fully on-line self-organising RW approach, however, it avoids degeneracy better than the self-organising RW approach because the likelihood ratio new hyperparameter proposals to their old value are unbiasedly estimated by rerunning the full inner filter.
+The fresh run of the inner filters is what makes SMC² slower than the fully on-line self-organising RW approach, however, it avoids degeneracy better than the self-organising RW approach because the likelihood of each new hyperparameter proposal is unbiasedly estimated by rerunning the full inner filter (the pseudo-marginal property that keeps the MH move exact).
 
 By default the MH proposal uses only the per-component variances (`full_cov = false`); dropping the noisy off-diagonal correlations stabilises the move at modest particle counts, while
 `full_cov = true` uses the full Cholesky.
@@ -159,7 +159,7 @@ Continuous renewal; stochasticity enters at observation (EpiNow2's default).
 | **Rt** | Differenced random walk on `log Rt` — a random walk on the *first differences* (`Δ logR[t] = Δ logR[t-1] + ε`; equivalently a second-order / integrated RW): a level anchor `logR[uot] ~ Normal(logR0_mean, logR0_var)` (= EpiNow2 `LogNormal(mean 1, sd 1)` on R₀ by default), a gentle initial slope `logR[uot+1] ~ Normal(logR[uot], σ_rw²)`, then `logR[t] ~ Normal(2·logR[t-1] − logR[t-2], σ_rw²)` — a smooth, locally-linear trend. `σ_rw` (the innovation sd) drifts (self-organizing). (EpiNow2 default is a GP; this is a cheaper smoothing prior.) |
 | **Renewal** | `I_t = R_t · Σ_{s=1..14} g_s · I_{t-s}` (no susceptible depletion — EpiNow2 default). |
 | **Day of week** | Length-7 simplex (softmax of 7 logits) × 7 so it averages to 1 — EpiNow2's `week_effect`. |
-| **Observation** | Delay-convolved, day-of-week-adjusted expected cases; Negative-Binomial-2 likelihood, `Var = μ + μ²/φ`, `1/√φ ~ HalfNormal(0, 0.25)`. Implemented with a `factor` matching Stan's `neg_binomial_2`. |
+| **Observation** | Delay-convolved, day-of-week-adjusted expected cases; Negative-Binomial-2 likelihood, `Var = μ + μ²/φ`, with `φ = exp(lphi)` and `lphi ~ Normal(log 10, 0.7²)` — a drifting (self-organizing) overdispersion for RW, the outer prior for SMC², configurable via `phi_prior`. Implemented with a `factor` matching Stan's `neg_binomial_2`. |
 
 
 ### Reading the output
@@ -208,7 +208,7 @@ trajectories by it. `R/plot_results.R` pools them with equal weight.
 
 ## Results
 
-- **RW engine** (`nparticles = 512`, `nsamples = 200`, 144 steps): ~268 s
+- **RW engine** (`nparticles = 512`, `nsamples = 150`, 144 steps): ~200 s
   single-threaded on an M-series Mac. Smooth posterior Rt (≈2 in early March,
   crossing 1 in late March, ≈0.85 through spring, rising in June) with 50 %/90 %
   bands, `σ_rw ≈ 0.04`, `φ ≈ 6`.
