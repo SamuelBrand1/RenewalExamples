@@ -8,7 +8,7 @@ using Random: seed!
 using StatsPlots
 using Turing
 using ReverseDiff, Mooncake
-using RenewalExamples: UnknownGI
+using RenewalLayers: UnknownGI
 using Enzyme: set_runtime_activity, Reverse, Forward
 
 seed!(1234)
@@ -56,7 +56,7 @@ Any particular parameter values can be used to create a double interval censored
 """
 true_shape_param = 3.0
 true_scale_param = 4.0
-censored_gi = double_interval_censored(ugi, true_shape_param, true_scale_param) # shape=3.0, scale=4.0 
+censored_gi = double_interval_censored(ugi, true_shape_param, true_scale_param) # shape=3.0, scale=4.0
 
 md"""
 ### Inference on the generation interval distribution
@@ -77,11 +77,11 @@ simulated_data_binned = [count(==(val), simulated_data_seqn) for val in vals]
 @model function fit_gi(
         vals, binned_data, ugi::UnknownGI{DT, P, T}
     ) where {DT, P <: NamedTuple, T <: Real}
-    
+
     params ~ arraydist(collect(values(ugi.param_priors))) # Sample parameters from priors
     censored_gi = double_interval_censored(ugi, params...) # Create censored GI distribution
 
-    vals ~ weight(censored_gi, binned_data)     # Vectorized weighted likelihood c.f `CensoredDistributions.jl` 
+    vals ~ weight(censored_gi, binned_data)     # Vectorized weighted likelihood c.f `CensoredDistributions.jl`
     return
 end
 
@@ -112,7 +112,7 @@ function fit_combo(adtypes, model; n_samples = 10, n_warmup = 5)
     names = collect(keys(adtypes))
     n_backends = length(names)
     results = Vector{Union{Nothing, @NamedTuple{chain::Any, wall_time::Float64}}}(nothing, n_backends)
-    
+
     @info "Warming up AD backends (n=$n_warmup samples each)..."
     for (name, adtype) in pairs(adtypes)
         try
@@ -123,7 +123,7 @@ function fit_combo(adtypes, model; n_samples = 10, n_warmup = 5)
             @warn "  Warmup failed for $name" exception = e
         end
     end
-    
+
     @info "Running timed fits (n=$n_samples samples each)..."
     Threads.@threads for i in eachindex(names)
         name = names[i]
@@ -135,7 +135,7 @@ function fit_combo(adtypes, model; n_samples = 10, n_warmup = 5)
             chain = sample(model, sampler, n_samples)
             wall_time = time() - start_time
             results[i] = (; chain, wall_time)
-            @info "Completed $name in $(round(wall_time; digits=2))s"
+            @info "Completed $name in $(round(wall_time; digits = 2))s"
         catch e
             @error "Error fitting with AD backend $name" exception = (e, catch_backtrace())
         end

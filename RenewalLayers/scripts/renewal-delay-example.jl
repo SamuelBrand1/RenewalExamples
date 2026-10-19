@@ -1,12 +1,12 @@
-#src using Pkg
-#src Pkg.activate(joinpath(@__DIR__, ".."))
+# using Pkg # hide
+# Pkg.activate(joinpath(@__DIR__, "..")) # hide
 
 using Distributions, LinearAlgebra, Markdown
 using Random: default_rng, seed!
 using StatsPlots
 using Turing
 using Lux
-using RenewalExamples: RenewalCell, delay_conv
+using RenewalLayers: RenewalCell, delay_conv
 using ReverseDiff
 
 seed!(1234)
@@ -42,11 +42,13 @@ delay_length = 20
 delay_pmf = [cdf(delay_dist, s) - cdf(delay_dist, s - 1) for s in 1:delay_length]
 delay_pmf = delay_pmf ./ sum(delay_pmf)
 
-p1 = bar(gi_pmf;
+p1 = bar(
+    gi_pmf;
     xlabel = "Days", ylabel = "Probability",
     title = "Generation Interval", label = "GI PMF"
 )
-p2 = bar(delay_pmf;
+p2 = bar(
+    delay_pmf;
     xlabel = "Days", ylabel = "Probability",
     title = "Observation Delay", label = "Delay PMF"
 )
@@ -100,19 +102,21 @@ _, st_rec = Lux.setup(rng, recurrence)
 inf_output, _ = recurrence(Rt_input, true_ps.layer_1, st_rec)
 latent_infections = [inf_output[t][1] for t in 1:T]
 
-observed_cases = rand.(Poisson.(max.(expected_obs, 1e-8)))
+observed_cases = rand.(Poisson.(max.(expected_obs, 1.0e-8)))
 
 md"""
 ## 4. Plot simulated data
 """
 
-p1 = plot(true_Rt;
+p1 = plot(
+    true_Rt;
     xlabel = "Day", ylabel = "R(t)",
     title = "True Reproduction Number",
     label = "R(t)", lw = 2, legend = :topright
 )
 
-p2 = plot(latent_infections;
+p2 = plot(
+    latent_infections;
     xlabel = "Day", ylabel = "Count",
     title = "Infections and Observed Cases",
     label = "Latent infections", lw = 2, legend = :topright
@@ -131,7 +135,7 @@ distribution are fixed to their known values.
 
 @model function fit_renewal_delay(
         observed, gi_pmf, delay_pmf, full_model, st
-)
+    )
     T = length(observed)
     gi_length = length(gi_pmf)
     delay_length = length(delay_pmf)
@@ -158,7 +162,7 @@ distribution are fixed to their known values.
 
     # Likelihood
     for t in 1:T
-        observed[t] ~ Poisson(max(expected[t], 1e-8))
+        observed[t] ~ Poisson(max(expected[t], 1.0e-8))
     end
 
     return (; Rt, expected)
@@ -169,11 +173,13 @@ md"""
 """
 
 fit_mdl = fit_renewal_delay(observed_cases, gi_pmf, delay_pmf, full_model, st)
-chain = sample(fit_mdl,
+chain = sample(
+    fit_mdl,
     NUTS(; adtype = AutoReverseDiff(; compile = Val(true))),
     MCMCThreads(),
     1000,
-    4)
+    4
+)
 
 describe(chain)
 
@@ -187,7 +193,8 @@ Rt_mean = vec(mean(Rt_posterior; dims = 1))
 Rt_lower = vec(mapslices(x -> quantile(x, 0.025), Rt_posterior; dims = 1))
 Rt_upper = vec(mapslices(x -> quantile(x, 0.975), Rt_posterior; dims = 1))
 
-plot(Rt_mean;
+plot(
+    Rt_mean;
     ribbon = (Rt_mean .- Rt_lower, Rt_upper .- Rt_mean),
     xlabel = "Day", ylabel = "R(t)",
     title = "Posterior R(t) Estimates (with observation delay)",

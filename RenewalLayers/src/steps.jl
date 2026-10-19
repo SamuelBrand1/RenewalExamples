@@ -18,7 +18,7 @@ reproduction numbers.
 # Example
 
 ```julia
-using Lux, Random, RenewalExamples
+using Lux, Random, RenewalLayers
 rng = Random.default_rng()
 cell = RenewalCell(10)
 model = Lux.Recurrence(cell; return_sequence=true)
@@ -53,7 +53,7 @@ end
 function (cell::RenewalCell)(
         (x, (state,))::Tuple{<:AbstractMatrix, Tuple{<:AbstractMatrix}},
         ps, st::NamedTuple
-)
+    )
     # x: (1, batch) — R(t) at this timestep
     # state: (gi_length, batch) — recent infections, most-recent-first
     # ps.gi: (gi_length,) — GI distribution vector

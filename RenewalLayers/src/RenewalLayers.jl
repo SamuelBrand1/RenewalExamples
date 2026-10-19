@@ -1,4 +1,4 @@
-module RenewalExamples
+module RenewalLayers
 
 import CensoredDistributions as CD
 using Distributions

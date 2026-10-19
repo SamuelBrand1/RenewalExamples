@@ -6,7 +6,7 @@ using Random: default_rng, seed!
 using StatsPlots
 using Turing
 using Lux
-using RenewalExamples: RenewalCell
+using RenewalLayers: RenewalCell
 using ReverseDiff
 using Enzyme
 
@@ -35,7 +35,8 @@ gi_length = 15
 gi_pmf = [cdf(gi_dist, s) - cdf(gi_dist, s - 1) for s in 1:gi_length]
 gi_pmf = gi_pmf ./ sum(gi_pmf)  # normalise
 
-bar(gi_pmf;
+bar(
+    gi_pmf;
     xlabel = "Days", ylabel = "Probability",
     title = "Generation Interval Distribution",
     label = "GI PMF", legend = :topright
@@ -83,13 +84,15 @@ md"""
 ## 4. Plot simulated data
 """
 
-p1 = plot(true_Rt;
+p1 = plot(
+    true_Rt;
     xlabel = "Day", ylabel = "R(t)",
     title = "True Reproduction Number",
     label = "R(t)", lw = 2, legend = :topright
 )
 
-p2 = plot(latent_infections;
+p2 = plot(
+    latent_infections;
     xlabel = "Day", ylabel = "Infections",
     title = "Infections",
     label = "Latent (true)", lw = 2, legend = :topright
@@ -107,7 +110,7 @@ as a single shared value. The GI distribution is fixed to its known value.
 
 @model function fit_renewal(
         observed, gi_pmf, renewal_model, st
-)
+    )
     T = length(observed)
     gi_length = length(gi_pmf)
 
@@ -126,7 +129,7 @@ as a single shared value. The GI distribution is fixed to its known value.
     # Likelihood
     for t in 1:T
         expected = output[t][1]
-        observed[t] ~ Poisson(max(expected, 1e-8))
+        observed[t] ~ Poisson(max(expected, 1.0e-8))
     end
 
     return (; Rt, latent = [output[t][1] for t in 1:T])
@@ -137,11 +140,13 @@ md"""
 """
 
 fit_mdl = fit_renewal(observed_cases, gi_pmf, renewal_model, st)
-chain_rvdiff = sample(fit_mdl,
-    NUTS(; adtype = AutoReverseDiff(; compile = Val(true))), 
+chain_rvdiff = sample(
+    fit_mdl,
+    NUTS(; adtype = AutoReverseDiff(; compile = Val(true))),
     MCMCThreads(),
     4,
-    1000)
+    1000
+)
 
 describe(chain_rvdiff)
 
@@ -155,7 +160,8 @@ Rt_mean = vec(mean(Rt_posterior; dims = 1))
 Rt_lower = vec(mapslices(x -> quantile(x, 0.025), Rt_posterior; dims = 1))
 Rt_upper = vec(mapslices(x -> quantile(x, 0.975), Rt_posterior; dims = 1))
 
-plot(Rt_mean;
+plot(
+    Rt_mean;
     ribbon = (Rt_mean .- Rt_lower, Rt_upper .- Rt_mean),
     xlabel = "Day", ylabel = "R(t)",
     title = "Posterior R(t) Estimates",

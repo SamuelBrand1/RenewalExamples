@@ -16,7 +16,7 @@ The delay PMF lives in the `Conv` layer's weight parameter
 # Example
 
 ```julia
-using Lux, Random, RenewalExamples
+using Lux, Random, RenewalLayers
 rng = Random.default_rng()
 gi_length = 10; delay_length = 7
 model = Lux.Chain(
